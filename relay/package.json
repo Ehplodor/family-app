@@ -1,0 +1,19 @@
+{
+  "name": "family-app-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Relais aveugle (zero-knowledge) : stocke et diffuse uniquement des données chiffrées de bout en bout.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "vapid": "node scripts/vapid.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.0.0",
+    "http_ece": "^1.2.1",
+    "typescript": "^5.8.0",
+    "wrangler": "^4.0.0"
+  }
+}

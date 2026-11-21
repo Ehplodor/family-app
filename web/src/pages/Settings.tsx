@@ -1,31 +1,22 @@
 import { useState } from 'react';
 import { ArrowDown, ArrowUp } from 'lucide-react';
-import { api, type FamilySettings } from '../api';
-import { useMe, useSession } from '../store';
+import type { FamilySettings, Member } from '../lib/engine';
+import { useEngine, useMe } from '../store';
 import { DEFAULT_HOME, MODULES } from '../modules';
 import { ColorPicker, Field, IconBadge, Page } from '../ui';
-import { InviteCard, MemberForm } from './Family';
+import { MemberForm } from './Family';
 
 export const DEFAULT_ACCENT = '#8E5CE6';
 
 export function SettingsPage() {
   const me = useMe();
-  const { refresh, setMe } = useSession();
+  const engine = useEngine();
   const [name, setName] = useState(me.family.name);
   const settings = me.family.settings;
   const home = settings.homeModules ?? DEFAULT_HOME;
 
-  const save = async (patch: { name?: string; settings?: FamilySettings }) => {
-    // Affichage immédiat, puis confirmation par le serveur.
-    setMe({
-      ...me,
-      family: { ...me.family, name: patch.name ?? me.family.name, settings: { ...me.family.settings, ...patch.settings } },
-    });
-    try {
-      await api('PATCH', '/family', patch);
-    } finally {
-      refresh();
-    }
+  const save = async (patch: { name?: string; settings?: Omit<FamilySettings, 'name'> }) => {
+    await engine.replica.upsert<FamilySettings>('settings', 'family', { ...(patch.name ? { name: patch.name } : {}), ...patch.settings });
   };
 
   // Ordre affiché : d'abord les modules de l'accueil (dans leur ordre), puis les autres.
@@ -91,14 +82,9 @@ export function SettingsPage() {
         <MemberForm
           key={`${me.member.name}${me.member.color}`}
           initial={me.member}
-          onSubmit={async (m) => {
-            await api('PATCH', `/members/${me.member.id}`, m);
-            refresh();
-          }}
+          onSubmit={(m) => engine.replica.update<Member>('members', me.member.id, m)}
         />
       </div>
-
-      <InviteCard />
     </Page>
   );
 }

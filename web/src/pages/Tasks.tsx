@@ -1,15 +1,18 @@
 import { useState } from 'react';
 import { Check, Repeat as RepeatIcon } from 'lucide-react';
 import { useCollection, useMe, useMembers } from '../store';
-import { addDays, addMonths, parseISODate, relativeDay, toISODate, today } from '../dates';
+import { relativeDay, today } from '../dates';
+import { nextDue, type TaskRepeat } from '../lib/recurrence';
 import { Avatar, Empty, Fab, Field, MemberChips, Page, Sheet, confirmDelete } from '../ui';
-import type { Doc } from '../api';
+import type { Doc } from '../store';
 
-export type TaskRepeat = 'none' | 'daily' | 'weekly' | 'monthly';
+export type { TaskRepeat };
 export type Task = {
   title: string;
   assigneeId?: string | null;
   due: string;
+  /** Heure précise (HH:MM) : le rappel tombe à cette heure, même pendant les heures calmes. */
+  time?: string;
   repeat: TaskRepeat;
   done?: boolean;
   lastDoneBy?: string | null;
@@ -23,19 +26,6 @@ const REPEAT_LABEL: Record<TaskRepeat, string> = {
   monthly: 'Chaque mois',
 };
 
-function advance(iso: string, repeat: TaskRepeat): string {
-  const d = parseISODate(iso);
-  if (repeat === 'daily') return toISODate(addDays(d, 1));
-  if (repeat === 'weekly') return toISODate(addDays(d, 7));
-  return toISODate(addMonths(d, 1));
-}
-
-/** Prochaine échéance d'une tâche récurrente, strictement après aujourd'hui. */
-export function nextDue(task: Task): string {
-  let next = advance(task.due, task.repeat);
-  while (next <= today()) next = advance(next, task.repeat);
-  return next;
-}
 
 export function TasksSummary() {
   const { docs } = useCollection<Task>('tasks');
@@ -83,6 +73,7 @@ export function TasksPage() {
           {t.title}
           <small className="block">
             {!t.done && relativeDay(t.due)}
+            {!t.done && t.time && ` à ${t.time}`}
             {t.repeat !== 'none' && (
               <>
                 {' '}
@@ -174,6 +165,11 @@ function TaskForm({ initial, onSubmit, onDelete }: { initial?: Task; onSubmit: (
         <Field label="Échéance">
           <input type="date" required value={t.due} onChange={(e) => set({ due: e.target.value })} />
         </Field>
+        <Field label="Heure (option)">
+          <input type="time" value={t.time ?? ''} onChange={(e) => set({ time: e.target.value })} />
+        </Field>
+      </div>
+      <div className="row">
         <Field label="Fréquence">
           <select value={t.repeat} onChange={(e) => set({ repeat: e.target.value as TaskRepeat })}>
             {Object.entries(REPEAT_LABEL).map(([k, v]) => (

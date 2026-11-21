@@ -8,47 +8,96 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
-import { api, ApiError, type Doc, type Me, type Member } from './api';
+import { Engine, type FamilySettings, type Member as MemberData } from './lib/engine';
+import { Notifier } from './lib/notify';
+import type { Doc } from './lib/replica';
+import type { SyncStatus } from './lib/sync';
 
-/* ------------------------------------------------------------------ */
-/* Collections : cache partagé + synchro temps réel                    */
-/* ------------------------------------------------------------------ */
+export type { Doc } from './lib/replica';
+export type Member = { id: string; name: string; color: string };
+export type Me = { member: Member; family: { name: string; settings: Omit<FamilySettings, 'name'> }; members: Member[] };
 
-type CollectionState = { docs: Doc<any>[]; loaded: boolean };
-type Entry = { state: CollectionState; loading: Promise<void> | null; listeners: Set<() => void> };
+/* ------------------------------------------------------------------ Contexte */
 
-const entries = new Map<string, Entry>();
+type AppState = 'loading' | 'setup' | 'choose-member' | 'ready' | 'removed';
+type Ctx = { engine: Engine | null; notifier: Notifier | null; state: AppState; error: string | null };
+const AppContext = createContext<Ctx>({ engine: null, notifier: null, state: 'loading', error: null });
 
-function entry(name: string): Entry {
-  let e = entries.get(name);
-  if (!e) {
-    e = { state: { docs: [], loaded: false }, loading: null, listeners: new Set() };
-    entries.set(name, e);
-  }
-  return e;
-}
-
-function setState(name: string, docs: Doc<any>[], loaded = true) {
-  const e = entry(name);
-  e.state = { docs, loaded };
-  e.listeners.forEach((l) => l());
-}
-
-function loadCollection(name: string): Promise<void> {
-  const e = entry(name);
-  if (e.loading) return e.loading;
-  e.loading = api<Doc<any>[]>('GET', `/docs/${name}`)
-    .then((docs) => setState(name, docs))
-    .catch((err) => console.warn(`Chargement de ${name} impossible`, err))
-    .finally(() => {
-      e.loading = null;
+let booted: Promise<{ engine: Engine; notifier: Notifier }> | null = null;
+function boot() {
+  booted ??= Engine.boot().then((engine) => {
+    const notifier = new Notifier(engine);
+    engine.sync?.whenReady().then(() => {
+      notifier.ensureSubscription().catch(() => {});
+      notifier.scheduleUpload(false);
     });
-  return e.loading;
+    return { engine, notifier };
+  });
+  return booted;
 }
 
-function reloadLoadedCollections() {
-  for (const [name, e] of entries) if (e.state.loaded) loadCollection(name);
+function computeState(e: Engine | null): AppState {
+  if (!e) return 'loading';
+  if (e.removed) return 'removed';
+  if (!e.circle) return 'setup';
+  if (!e.memberId || !e.replica.get('members', e.memberId)) return 'choose-member';
+  return 'ready';
 }
+
+export function AppProvider({ children }: { children: ReactNode }) {
+  const [ctx, setCtx] = useState<Ctx>({ engine: null, notifier: null, state: 'loading', error: null });
+
+  useEffect(() => {
+    let unsub: (() => void)[] = [];
+    boot()
+      .then(({ engine, notifier }) => {
+        const refresh = () => setCtx({ engine, notifier, state: computeState(engine), error: null });
+        unsub = [engine.subscribe(refresh), engine.replica.subscribe('members', refresh)];
+        let lastCircle = engine.circle?.circleId;
+        unsub.push(
+          engine.subscribe(() => {
+            // Après un changement de cercle (rotation de clé), on réenregistre les notifications.
+            if (engine.circle?.circleId !== lastCircle) {
+              lastCircle = engine.circle?.circleId;
+              engine.sync?.whenReady().then(() => {
+                notifier.ensureSubscription().catch(() => {});
+                notifier.scheduleUpload(true);
+              });
+            }
+          }),
+        );
+        refresh();
+      })
+      .catch((err) => setCtx((c) => ({ ...c, error: String(err) })));
+    return () => unsub.forEach((u) => u());
+  }, []);
+
+  return <AppContext.Provider value={ctx}>{children}</AppContext.Provider>;
+}
+
+export const useApp = () => useContext(AppContext);
+
+export function useEngine(): Engine {
+  const { engine } = useApp();
+  if (!engine) throw new Error('Moteur non initialisé');
+  return engine;
+}
+
+export function useNotifier(): Notifier {
+  const { notifier } = useApp();
+  if (!notifier) throw new Error('Notifications non initialisées');
+  return notifier;
+}
+
+export function useSyncStatus(): SyncStatus {
+  const engine = useEngine();
+  return useSyncExternalStore(
+    (cb) => engine.subscribe(cb),
+    () => engine.sync?.status ?? 'local',
+  );
+}
+
+/* ------------------------------------------------------------------ Collections */
 
 export type Collection<T> = {
   docs: Doc<T>[];
@@ -59,160 +108,45 @@ export type Collection<T> = {
 };
 
 /**
- * Accès à une collection partagée par toute la famille.
- * Toute modification (par vous ou un autre membre) est répercutée en direct.
+ * Accès à une collection de la famille. Les données sont lues sur l'appareil
+ * (instantané, même hors ligne) et les modifications sont synchronisées en arrière-plan.
  */
 export function useCollection<T extends object>(name: string): Collection<T> {
-  const e = entry(name);
-  const state = useSyncExternalStore(
-    (cb) => {
-      e.listeners.add(cb);
-      return () => {
-        e.listeners.delete(cb);
-      };
-    },
-    () => e.state,
+  const engine = useEngine();
+  const r = engine.replica;
+  const docs = useSyncExternalStore(
+    (cb) => r.subscribe(name, cb),
+    () => r.list<T>(name),
   );
-
-  useEffect(() => {
-    if (!entry(name).state.loaded) loadCollection(name);
-  }, [name]);
-
-  return useMemo(() => {
-    const docs = state.docs as Doc<T>[];
-    return {
+  return useMemo(
+    () => ({
       docs,
-      loaded: state.loaded,
-      async create(data: T) {
-        const doc = await api<Doc<T>>('POST', `/docs/${name}`, { data });
-        const current = entry(name).state.docs;
-        if (!current.some((d) => d.id === doc.id)) setState(name, [...current, doc]);
-        return doc;
-      },
-      async update(id: string, patch: Partial<T>) {
-        // Mise à jour optimiste : l'écran réagit tout de suite.
-        setState(
-          name,
-          entry(name).state.docs.map((d) => (d.id === id ? { ...d, ...patch } : d)),
-        );
-        try {
-          const doc = await api<Doc<T>>('PATCH', `/docs/${name}/${id}`, { data: patch });
-          setState(name, entry(name).state.docs.map((d) => (d.id === id ? doc : d)));
-        } catch (err) {
-          loadCollection(name);
-          throw err;
-        }
-      },
-      async remove(id: string) {
-        setState(name, entry(name).state.docs.filter((d) => d.id !== id));
-        try {
-          await api('DELETE', `/docs/${name}/${id}`);
-        } catch (err) {
-          loadCollection(name);
-          throw err;
-        }
-      },
-    };
-  }, [name, state]);
+      loaded: true,
+      create: (data: T) => r.create<T>(name, data),
+      update: (id: string, patch: Partial<T>) => r.update<T>(name, id, patch),
+      remove: (id: string) => r.remove(name, id),
+    }),
+    [docs, r, name],
+  );
 }
 
-/* ------------------------------------------------------------------ */
-/* Session                                                             */
-/* ------------------------------------------------------------------ */
-
-type SessionValue = {
-  status: 'loading' | 'anon' | 'ready' | 'offline';
-  me: Me | null;
-  setMe: (me: Me) => void;
-  refresh: () => Promise<void>;
-  logout: () => Promise<void>;
-};
-
-const SessionContext = createContext<SessionValue | null>(null);
-
-export function SessionProvider({ children }: { children: ReactNode }) {
-  const [me, setMeState] = useState<Me | null>(null);
-  const [status, setStatus] = useState<SessionValue['status']>('loading');
-
-  const setMe = useCallback((m: Me) => {
-    setMeState(m);
-    setStatus('ready');
-  }, []);
-
-  const refresh = useCallback(async () => {
-    try {
-      setMe(await api<Me>('GET', '/me'));
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        setMeState(null);
-        setStatus('anon');
-      } else {
-        setStatus((s) => (s === 'ready' ? s : 'offline'));
-      }
-    }
-  }, [setMe]);
-
-  const logout = useCallback(async () => {
-    await api('POST', '/logout');
-    entries.clear();
-    setMeState(null);
-    setStatus('anon');
-  }, []);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  // Flux temps réel : chaque changement côté serveur recharge ce qui est concerné.
-  const familyId = me?.family.id;
-  useEffect(() => {
-    if (!familyId) return;
-    const es = new EventSource('/api/stream');
-    let hadError = false;
-    es.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.type === 'family') refresh();
-      else if (msg.type === 'docs' && entries.get(msg.collection)?.state.loaded) loadCollection(msg.collection);
-    };
-    es.onerror = () => {
-      hadError = true;
-    };
-    es.onopen = () => {
-      // Après une coupure, on rattrape ce qu'on a pu manquer.
-      if (hadError) {
-        hadError = false;
-        refresh();
-        reloadLoadedCollections();
-      }
-    };
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') {
-        refresh();
-        reloadLoadedCollections();
-      }
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      es.close();
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [familyId, refresh]);
-
-  const value = useMemo(() => ({ status, me, setMe, refresh, logout }), [status, me, setMe, refresh, logout]);
-  return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
+export function useDoc<T extends object>(collection: string, id: string): Doc<T> | undefined {
+  const { docs } = useCollection<T>(collection);
+  return docs.find((d) => d.id === id);
 }
 
-export function useSession(): SessionValue {
-  const v = useContext(SessionContext);
-  if (!v) throw new Error('SessionProvider manquant');
-  return v;
-}
+/* ------------------------------------------------------------------ Moi / la famille */
 
-/** À utiliser uniquement dans les écrans accessibles une fois connecté. */
 export function useMe(): Me {
-  const { me } = useSession();
-  if (!me) throw new Error('Non connecté');
-  return me;
+  const engine = useEngine();
+  const members = useCollection<MemberData>('members').docs;
+  const settings = useDoc<FamilySettings>('settings', 'family');
+  return useMemo(() => {
+    const list = members.map((m) => ({ id: m.id, name: m.name, color: m.color }));
+    const member = list.find((m) => m.id === engine.memberId) ?? { id: engine.memberId ?? '', name: '?', color: '#999999' };
+    const { name = 'Ma famille', ...rest } = settings ?? ({} as Partial<FamilySettings>);
+    return { member, members: list, family: { name, settings: rest } };
+  }, [members, settings, engine.memberId]);
 }
 
 export function useMembers(): { members: Member[]; byId: (id: string | null | undefined) => Member | undefined } {
@@ -221,6 +155,26 @@ export function useMembers(): { members: Member[]; byId: (id: string | null | un
     const map = new Map(members.map((m) => [m.id, m]));
     return { members, byId: (id) => (id ? map.get(id) : undefined) };
   }, [members]);
+}
+
+/** Photo chiffrée → URL locale affichable. */
+export function useBlobUrl(blobId: string | undefined): string | null {
+  const engine = useEngine();
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let revoked = false;
+    let objectUrl: string | null = null;
+    if (blobId) {
+      engine.getBlob(blobId).then((b) => {
+        if (b && !revoked) setUrl((objectUrl = URL.createObjectURL(b)));
+      });
+    }
+    return () => {
+      revoked = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [blobId, engine]);
+  return url;
 }
 
 /** Petit stockage local (par appareil), tolérant aux erreurs. */

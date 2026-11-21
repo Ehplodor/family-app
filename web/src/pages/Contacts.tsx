@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Contact as ContactIcon, Mail, MapPin, Phone, Search } from 'lucide-react';
 import { useCollection } from '../store';
 import { Empty, Fab, Field, Page, Sheet, confirmDelete } from '../ui';
-import type { Doc } from '../api';
+import type { Doc } from '../store';
 
 export type Contact = { name: string; category?: string; phone?: string; email?: string; address?: string; notes?: string };
 

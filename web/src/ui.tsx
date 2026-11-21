@@ -1,6 +1,6 @@
 import { useEffect, type ReactNode } from 'react';
 import { ChevronLeft, Plus, X } from 'lucide-react';
-import type { Member } from './api';
+import type { Member } from './store';
 import { goBack } from './router';
 
 export const PALETTE = [

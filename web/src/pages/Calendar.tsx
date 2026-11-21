@@ -3,10 +3,11 @@ import { Cake, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useCollection, useMembers } from '../store';
 import { addMonths, capitalize, fmt, parseISODate, startOfWeek, addDays, toISODate, today } from '../dates';
 import { Avatar, Empty, Fab, Field, MemberChips, Page, Sheet, confirmDelete } from '../ui';
-import type { Doc, Member } from '../api';
+import type { Doc, Member } from '../store';
 import type { Birthday } from './Birthdays';
+import { occursOn, type Repeat } from '../lib/recurrence';
 
-export type Repeat = 'none' | 'weekly' | 'monthly' | 'yearly';
+export type { Repeat };
 export type CalEvent = {
   title: string;
   date: string; // AAAA-MM-JJ
@@ -17,6 +18,8 @@ export type CalEvent = {
   repeat?: Repeat;
   memberIds: string[];
   notes?: string;
+  /** Minutes avant le début ; null = aucun rappel ; -1 ou absent = réglage par défaut du membre. */
+  reminder?: number | null;
 };
 
 export type Occurrence = {
@@ -29,21 +32,7 @@ export type Occurrence = {
   birthday?: boolean;
 };
 
-export function occursOn(ev: CalEvent, iso: string): boolean {
-  if (iso < ev.date) return false;
-  const d = parseISODate(iso);
-  const s = parseISODate(ev.date);
-  switch (ev.repeat) {
-    case 'weekly':
-      return d.getDay() === s.getDay();
-    case 'monthly':
-      return d.getDate() === s.getDate();
-    case 'yearly':
-      return d.getDate() === s.getDate() && d.getMonth() === s.getMonth();
-    default:
-      return iso <= (ev.endDate && ev.endDate > ev.date ? ev.endDate : ev.date);
-  }
-}
+export { occursOn };
 
 /** Tout ce qui se passe un jour donné (événements + anniversaires), trié. */
 export function useDayAgenda() {
@@ -280,6 +269,24 @@ function EventForm({
       )}
       <Field label="Qui ?">
         <MemberChips members={members} value={ev.memberIds} onChange={(memberIds) => set({ memberIds })} />
+      </Field>
+      <Field label="Rappel">
+        <select
+          value={ev.reminder === undefined || ev.reminder === -1 ? 'default' : ev.reminder === null ? 'none' : String(ev.reminder)}
+          onChange={(e) => {
+            const v = e.target.value;
+            set({ reminder: v === 'default' ? -1 : v === 'none' ? null : Number(v) });
+          }}
+        >
+          <option value="default">Par défaut (selon les réglages de chacun)</option>
+          <option value="none">Aucun rappel</option>
+          <option value="0">À l'heure</option>
+          <option value="10">10 min avant</option>
+          <option value="30">30 min avant</option>
+          <option value="60">1 h avant</option>
+          <option value="120">2 h avant</option>
+          <option value="1440">La veille (même heure)</option>
+        </select>
       </Field>
       <Field label="Notes">
         <textarea rows={3} value={ev.notes ?? ''} onChange={(e) => set({ notes: e.target.value })} />

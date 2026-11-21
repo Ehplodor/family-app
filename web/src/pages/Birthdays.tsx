@@ -3,7 +3,7 @@ import { Cake } from 'lucide-react';
 import { useCollection } from '../store';
 import { daysBetween, fmt, nextAnnual, pad, parseISODate, today } from '../dates';
 import { Empty, Fab, Field, Page, Sheet, confirmDelete } from '../ui';
-import type { Doc } from '../api';
+import type { Doc } from '../store';
 
 export type Birthday = { name: string; day: number; month: number; year?: number | null; notes?: string };
 

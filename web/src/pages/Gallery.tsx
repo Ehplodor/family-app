@@ -1,19 +1,23 @@
 import { useRef, useState } from 'react';
 import { Camera, ChevronLeft, ChevronRight, ImagePlus, Trash2, X } from 'lucide-react';
-import { useCollection, useMembers } from '../store';
-import { fileUrl, uploadImage, type Doc } from '../api';
+import { useBlobUrl, useCollection, useEngine, useMembers, type Doc } from '../store';
 import { fmt } from '../dates';
 import { Empty, Page, confirmDelete } from '../ui';
 
-export type Photo = { fileId: string; caption?: string };
+export type Photo = { blobId: string; caption?: string };
 
 export function GallerySummary() {
   const { docs } = useCollection<Photo>('photos');
   return <>{docs.length ? `${docs.length} photo${docs.length > 1 ? 's' : ''}` : 'Aucune photo'}</>;
 }
 
+function Thumb({ blobId, alt, onClick }: { blobId: string; alt: string; onClick?: (e: React.MouseEvent) => void }) {
+  const url = useBlobUrl(blobId);
+  return url ? <img src={url} alt={alt} onClick={onClick} /> : <span className="thumb-loading" />;
+}
+
 /** Réduit les photos avant l'envoi (plus rapide, moins de stockage). */
-async function shrink(file: File, max = 2000): Promise<Blob> {
+async function shrink(file: File, max = 1600): Promise<Blob> {
   if (file.type === 'image/gif') return file;
   try {
     const bitmap = await createImageBitmap(file);
@@ -23,7 +27,7 @@ async function shrink(file: File, max = 2000): Promise<Blob> {
     canvas.height = Math.round(bitmap.height * scale);
     canvas.getContext('2d')!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
     return await new Promise((resolve, reject) =>
-      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('conversion'))), 'image/jpeg', 0.85),
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('conversion'))), 'image/jpeg', 0.82),
     );
   } catch {
     return file;
@@ -32,6 +36,7 @@ async function shrink(file: File, max = 2000): Promise<Blob> {
 
 export function GalleryPage() {
   const photos = useCollection<Photo>('photos');
+  const engine = useEngine();
   const { byId } = useMembers();
   const input = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(0);
@@ -46,8 +51,9 @@ export function GalleryPage() {
     setUploading(files.length);
     for (const file of Array.from(files)) {
       try {
-        const { id } = await uploadImage(await shrink(file));
-        await photos.create({ fileId: id, caption: '' });
+        const blob = await shrink(file);
+        const blobId = await engine.putBlob(new Uint8Array(await blob.arrayBuffer()), blob.type || 'image/jpeg');
+        await photos.create({ blobId, caption: '' });
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Envoi impossible');
       }
@@ -73,7 +79,7 @@ export function GalleryPage() {
       <div className="gallery">
         {sorted.map((p, i) => (
           <button key={p.id} onClick={() => setOpen(i)}>
-            <img src={fileUrl(p.fileId)} alt={p.caption || ''} loading="lazy" />
+            <Thumb blobId={p.blobId} alt={p.caption || ''} />
           </button>
         ))}
       </div>
@@ -90,6 +96,7 @@ export function GalleryPage() {
               onClick={() => {
                 if (confirmDelete('cette photo')) {
                   photos.remove(current.id);
+                  engine.deleteBlob(current.blobId);
                   setOpen(null);
                 }
               }}
@@ -100,7 +107,7 @@ export function GalleryPage() {
               <X />
             </button>
           </div>
-          <img src={fileUrl(current.fileId)} alt={current.caption || ''} onClick={(e) => e.stopPropagation()} />
+          <Thumb blobId={current.blobId} alt={current.caption || ''} onClick={(e) => e.stopPropagation()} />
           {open > 0 && (
             <button className="viewer-nav left" onClick={(e) => (e.stopPropagation(), setOpen(open - 1))} aria-label="Précédente">
               <ChevronLeft size={32} />

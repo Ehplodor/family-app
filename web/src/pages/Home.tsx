@@ -1,5 +1,8 @@
-import { Sparkles } from 'lucide-react';
-import { useMe } from '../store';
+import { BellRing, Cloud, CloudOff, HardDrive, Sparkles, X } from 'lucide-react';
+import { useDoc, useEngine, useLocalState, useMe, useNotifier, useSyncStatus } from '../store';
+import type { Device } from '../lib/engine';
+import { pushSupported } from '../lib/notify';
+import { RELAY_URL } from '../lib/sync';
 import { navigate } from '../router';
 import { DEFAULT_HOME, moduleById, type ModuleDef } from '../modules';
 import { capitalize, fmt, today } from '../dates';
@@ -36,6 +39,38 @@ function TodayCard() {
   );
 }
 
+function SyncBadge() {
+  const status = useSyncStatus();
+  const label = { local: 'Sur cet appareil uniquement', connecting: 'Connexion…', online: 'Synchronisé, chiffré de bout en bout', offline: 'Hors ligne', denied: 'Accès refusé', closed: 'Cercle fermé' }[status];
+  const Icon = status === 'local' ? HardDrive : status === 'online' ? Cloud : CloudOff;
+  return (
+    <button className={`sync-badge ${status}`} onClick={() => navigate('/security')} aria-label={label} title={label}>
+      <Icon size={18} />
+    </button>
+  );
+}
+
+function PushBanner() {
+  const engine = useEngine();
+  const notifier = useNotifier();
+  const device = useDoc<Device>('devices', engine.deviceId);
+  const [dismissed, setDismissed] = useLocalState('pushBannerDismissed', false);
+  if (!RELAY_URL || dismissed || device?.push || notifier.permission() === 'denied') return null;
+  if (!pushSupported() && !/iPhone|iPad/.test(navigator.userAgent)) return null;
+  return (
+    <div className="card push-banner">
+      <BellRing size={28} className="accent-text" />
+      <button className="grow" onClick={() => navigate('/notifications')}>
+        <strong>Activer les rappels</strong>
+        <small className="block">Rendez-vous, anniversaires, tâches… même appli fermée.</small>
+      </button>
+      <button className="icon-btn subtle" onClick={() => setDismissed(true)} aria-label="Masquer">
+        <X size={18} />
+      </button>
+    </div>
+  );
+}
+
 export function HomePage() {
   const { family, member } = useMe();
   const ids = family.settings.homeModules ?? DEFAULT_HOME;
@@ -45,10 +80,12 @@ export function HomePage() {
     <div className="page home">
       <header className="home-header">
         <h1>{family.name}</h1>
+        <SyncBadge />
         <button className="avatar-btn" onClick={() => navigate('/m/family')} aria-label="Ma famille">
           <Avatar member={member} size={48} />
         </button>
       </header>
+      <PushBanner />
       <TodayCard />
       <div className="tiles">
         {mods.map((m) => (

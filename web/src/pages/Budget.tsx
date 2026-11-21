@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, PiggyBank } from 'lucide-react';
 import { useCollection } from '../store';
 import { addMonths, capitalize, fmt, today } from '../dates';
 import { Empty, Fab, Field, Page, Sheet, confirmDelete } from '../ui';
-import type { Doc } from '../api';
+import type { Doc } from '../store';
 
 export type Entry = { label: string; amount: number; type: 'expense' | 'income'; category: string; date: string };
 

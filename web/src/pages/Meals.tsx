@@ -4,7 +4,7 @@ import { useCollection } from '../store';
 import { addDays, capitalize, fmt, startOfWeek, toISODate, today } from '../dates';
 import { navigate } from '../router';
 import { Field, Page, Sheet } from '../ui';
-import type { Doc } from '../api';
+import type { Doc } from '../store';
 import { ingredientsOf, type Recipe } from './Recipes';
 import type { List, ListItem } from './Lists';
 

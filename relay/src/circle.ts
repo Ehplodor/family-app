@@ -1,0 +1,377 @@
+import { DurableObject } from 'cloudflare:workers';
+import type { Env } from './index';
+import { sendPush, type PushSubscriptionJSON } from './webpush';
+
+/**
+ * Un cercle familial = un Durable Object.
+ * Tout ce qui est stocké ici est chiffré par les appareils (le relais n'a pas la clé).
+ * Le relais voit seulement : identifiants aléatoires, tailles, horodatages, heures d'envoi des rappels.
+ */
+
+const MAX_BATCH = 512 * 1024; // un paquet de modifications chiffré
+const MAX_SNAPSHOT = 1900 * 1024;
+const MAX_BLOB = 1900 * 1024; // une photo chiffrée (réduite par l'appli avant envoi)
+const MAX_SCHEDULE = 300; // rappels planifiés par appareil
+const MAX_PAYLOAD = 3000; // contenu chiffré d'une notification
+const CLOSED_RETENTION = 30 * 24 * 3600 * 1000; // après rotation de clé
+const DEVICE_RE = /^[0-9a-f]{32}$/;
+const BLOB_RE = /^[0-9a-f]{32}$/;
+
+type Attachment = { ok: boolean; device?: string };
+type QueueItem = { device: string; at: number; payload: string; topic?: string; urgent?: boolean };
+
+class HttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+async function sha256Hex(s: string) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Comparaison en temps constant. */
+function safeEqual(a: string, b: string) {
+  if (a.length !== b.length) return false;
+  let r = 0;
+  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
+}
+
+export class Circle extends DurableObject<Env> {
+  private sql: SqlStorage;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.sql = ctx.storage.sql;
+    this.migrate();
+  }
+
+  private migrate() {
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+      CREATE TABLE IF NOT EXISTS log (seq INTEGER PRIMARY KEY AUTOINCREMENT, device TEXT, data TEXT NOT NULL, at INTEGER);
+      CREATE TABLE IF NOT EXISTS snapshot (id INTEGER PRIMARY KEY CHECK (id = 1), seq INTEGER NOT NULL, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS blobs (id TEXT PRIMARY KEY, data BLOB NOT NULL, at INTEGER);
+      CREATE TABLE IF NOT EXISTS subs (device TEXT PRIMARY KEY, sub TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, device TEXT NOT NULL, at INTEGER NOT NULL, payload TEXT NOT NULL,
+        topic TEXT, urgent INTEGER DEFAULT 0, source TEXT NOT NULL, tries INTEGER DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS queue_at ON queue(at);
+      CREATE INDEX IF NOT EXISTS queue_device ON queue(device, source);
+    `);
+  }
+
+  // ------------------------------------------------------------ utilitaires
+
+  private meta(k: string): string | null {
+    const row = this.sql.exec<{ v: string }>('SELECT v FROM meta WHERE k = ?', k).toArray()[0];
+    return row ? row.v : null;
+  }
+  private setMeta(k: string, v: string) {
+    this.sql.exec('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v', k, v);
+  }
+  private head(): number {
+    const r = this.sql.exec<{ s: number | null }>('SELECT MAX(seq) AS s FROM log').one().s;
+    const snap = this.sql.exec<{ seq: number }>('SELECT seq FROM snapshot').toArray()[0]?.seq ?? 0;
+    return Math.max(r ?? 0, snap);
+  }
+
+  private async checkToken(token: unknown): Promise<boolean> {
+    const stored = this.meta('auth');
+    if (!stored || typeof token !== 'string' || token.length < 20) return false;
+    return safeEqual(stored, await sha256Hex(token));
+  }
+
+  private async auth(request: Request) {
+    const token = (request.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
+    if (!(await this.checkToken(token))) throw new HttpError(403, 'Accès refusé');
+  }
+
+  private notClosed() {
+    if (this.meta('closed')) throw new HttpError(410, 'Ce cercle a été fermé (clé renouvelée)');
+  }
+
+  private async rescheduleAlarm() {
+    const next = this.sql.exec<{ at: number | null }>('SELECT MIN(at) AS at FROM queue').one().at;
+    const closedAt = Number(this.meta('closed') ?? 0);
+    const candidates = [next, closedAt ? closedAt + CLOSED_RETENTION : null].filter((x): x is number => !!x);
+    if (candidates.length) await this.ctx.storage.setAlarm(Math.max(Date.now(), Math.min(...candidates)));
+    else await this.ctx.storage.deleteAlarm();
+  }
+
+  // ------------------------------------------------------------ HTTP
+
+  async fetch(request: Request): Promise<Response> {
+    try {
+      return await this.route(request);
+    } catch (err) {
+      if (err instanceof HttpError) return Response.json({ error: err.message }, { status: err.status });
+      console.error(err);
+      return Response.json({ error: 'Erreur du relais' }, { status: 500 });
+    }
+  }
+
+  private async route(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const [, , action, arg] = url.pathname.split('/').filter(Boolean);
+    const m = request.method;
+
+    if (action === 'ws' && request.headers.get('Upgrade') === 'websocket') {
+      const pair = new WebSocketPair();
+      this.ctx.acceptWebSocket(pair[1]);
+      pair[1].serializeAttachment({ ok: false } satisfies Attachment);
+      return new Response(null, { status: 101, webSocket: pair[0] });
+    }
+
+    // Enregistrement du cercle : le premier jeton présenté devient la référence (empreinte SHA-256 seulement).
+    if (action === 'register' && m === 'POST') {
+      const { token } = (await request.json()) as { token?: string };
+      if (typeof token !== 'string' || token.length < 20) throw new HttpError(400, 'Jeton invalide');
+      const stored = this.meta('auth');
+      if (!stored) this.setMeta('auth', await sha256Hex(token));
+      else if (!(await this.checkToken(token))) throw new HttpError(403, 'Accès refusé');
+      return Response.json({ ok: true, closed: !!this.meta('closed') });
+    }
+
+    await this.auth(request);
+
+    if (action === 'blobs' && arg && BLOB_RE.test(arg)) {
+      if (m === 'GET') {
+        const row = this.sql.exec<{ data: ArrayBuffer }>('SELECT data FROM blobs WHERE id = ?', arg).toArray()[0];
+        if (!row) throw new HttpError(404, 'Introuvable');
+        return new Response(row.data, { headers: { 'Content-Type': 'application/octet-stream' } });
+      }
+      if (m === 'PUT') {
+        this.notClosed();
+        const data = await request.arrayBuffer();
+        if (!data.byteLength || data.byteLength > MAX_BLOB) throw new HttpError(413, 'Fichier trop volumineux');
+        this.sql.exec('INSERT OR REPLACE INTO blobs (id, data, at) VALUES (?, ?, ?)', arg, data, Date.now());
+        return Response.json({ ok: true });
+      }
+      if (m === 'DELETE') {
+        this.sql.exec('DELETE FROM blobs WHERE id = ?', arg);
+        return Response.json({ ok: true });
+      }
+    }
+
+    if (action === 'subs' && arg && DEVICE_RE.test(arg)) {
+      if (m === 'PUT') {
+        this.notClosed();
+        const sub = (await request.json()) as PushSubscriptionJSON;
+        // http://localhost n'est accepté que pour les tests locaux (sans effet en production).
+        const okEndpoint = /^https:\/\//.test(sub?.endpoint ?? '') || /^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(sub?.endpoint ?? '');
+        if (!okEndpoint || !sub.keys?.p256dh || !sub.keys?.auth) {
+          throw new HttpError(400, 'Abonnement invalide');
+        }
+        const clean = { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } };
+        this.sql.exec('INSERT OR REPLACE INTO subs (device, sub) VALUES (?, ?)', arg, JSON.stringify(clean));
+        return Response.json({ ok: true });
+      }
+      if (m === 'DELETE') {
+        this.sql.exec('DELETE FROM subs WHERE device = ?', arg);
+        this.sql.exec('DELETE FROM queue WHERE device = ?', arg);
+        return Response.json({ ok: true });
+      }
+    }
+
+    // Rappels planifiés d'un appareil : la liste envoyée remplace la précédente.
+    if (action === 'schedule' && arg && DEVICE_RE.test(arg) && m === 'PUT') {
+      this.notClosed();
+      const { items } = (await request.json()) as { items: QueueItem[] };
+      if (!Array.isArray(items) || items.length > MAX_SCHEDULE) throw new HttpError(400, 'Liste de rappels invalide');
+      this.sql.exec("DELETE FROM queue WHERE device = ? AND source = 'schedule'", arg);
+      for (const it of items) this.insertQueue({ ...it, device: arg }, 'schedule');
+      await this.rescheduleAlarm();
+      return Response.json({ ok: true, count: items.length });
+    }
+
+    // Notifications ponctuelles (activité, sécurité, « rappeler plus tard »).
+    if (action === 'notify' && m === 'POST') {
+      this.notClosed();
+      const { items } = (await request.json()) as { items: QueueItem[] };
+      if (!Array.isArray(items) || items.length > 50) throw new HttpError(400, 'Notifications invalides');
+      for (const it of items) {
+        if (!DEVICE_RE.test(it.device)) throw new HttpError(400, 'Appareil invalide');
+        this.insertQueue({ ...it, at: it.at ?? Date.now() }, 'notify');
+      }
+      await this.deliverDue();
+      await this.rescheduleAlarm();
+      return Response.json({ ok: true });
+    }
+
+    // Rotation de clé : le cercle passe en lecture seule puis est effacé au bout de 30 jours.
+    if (action === 'close' && m === 'POST') {
+      if (!this.meta('closed')) this.setMeta('closed', String(Date.now()));
+      this.sql.exec('DELETE FROM queue');
+      this.sql.exec('DELETE FROM subs');
+      this.sql.exec('DELETE FROM blobs');
+      await this.rescheduleAlarm();
+      return Response.json({ ok: true });
+    }
+
+    // Droit à l'effacement : supprime TOUT ce que le relais détient pour ce cercle.
+    if (!action && m === 'DELETE') {
+      for (const ws of this.ctx.getWebSockets()) ws.close(4001, 'Cercle supprimé');
+      await this.ctx.storage.deleteAlarm();
+      await this.ctx.storage.deleteAll();
+      this.migrate();
+      return Response.json({ ok: true });
+    }
+
+    throw new HttpError(404, 'Introuvable');
+  }
+
+  private insertQueue(it: QueueItem, source: string) {
+    if (typeof it.payload !== 'string' || it.payload.length > MAX_PAYLOAD) throw new HttpError(400, 'Notification trop volumineuse');
+    if (typeof it.at !== 'number' || !Number.isFinite(it.at)) throw new HttpError(400, 'Date invalide');
+    const topic = typeof it.topic === 'string' ? it.topic.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32) : null;
+    this.sql.exec(
+      'INSERT INTO queue (device, at, payload, topic, urgent, source) VALUES (?, ?, ?, ?, ?, ?)',
+      it.device,
+      Math.round(it.at),
+      it.payload,
+      topic || null,
+      it.urgent ? 1 : 0,
+      source,
+    );
+  }
+
+  // ------------------------------------------------------------ envoi des notifications
+
+  private async deliverDue() {
+    if (!this.env.VAPID_PRIVATE_JWK || !this.env.VAPID_PUBLIC_KEY) return;
+    const vapid = {
+      privateJwk: JSON.parse(this.env.VAPID_PRIVATE_JWK) as JsonWebKey,
+      publicKey: this.env.VAPID_PUBLIC_KEY,
+      subject: this.env.VAPID_SUBJECT || 'mailto:relay@example.invalid',
+    };
+    const rows = this.sql
+      .exec<{ id: number; device: string; payload: string; topic: string | null; urgent: number; tries: number }>(
+        'SELECT id, device, payload, topic, urgent, tries FROM queue WHERE at <= ? ORDER BY at LIMIT 100',
+        Date.now() + 1000,
+      )
+      .toArray();
+    for (const r of rows) {
+      const subRow = this.sql.exec<{ sub: string }>('SELECT sub FROM subs WHERE device = ?', r.device).toArray()[0];
+      if (!subRow) {
+        this.sql.exec('DELETE FROM queue WHERE id = ?', r.id);
+        continue;
+      }
+      let status = 0;
+      try {
+        const res = await sendPush(JSON.parse(subRow.sub), r.payload, vapid, {
+          urgency: r.urgent ? 'high' : 'normal',
+          topic: r.topic ?? undefined,
+        });
+        status = res.status;
+      } catch {
+        status = 0;
+      }
+      if (status === 404 || status === 410) {
+        // Abonnement expiré (appli désinstallée, permission retirée…)
+        this.sql.exec('DELETE FROM subs WHERE device = ?', r.device);
+        this.sql.exec('DELETE FROM queue WHERE device = ?', r.device);
+      } else if ((status === 0 || status === 429 || status >= 500) && r.tries < 3) {
+        this.sql.exec('UPDATE queue SET at = ?, tries = tries + 1 WHERE id = ?', Date.now() + 60_000 * (r.tries + 1), r.id);
+      } else {
+        this.sql.exec('DELETE FROM queue WHERE id = ?', r.id);
+      }
+    }
+  }
+
+  async alarm() {
+    const closedAt = Number(this.meta('closed') ?? 0);
+    if (closedAt && Date.now() > closedAt + CLOSED_RETENTION) {
+      await this.ctx.storage.deleteAll();
+      this.migrate();
+      return;
+    }
+    await this.deliverDue();
+    await this.rescheduleAlarm();
+  }
+
+  // ------------------------------------------------------------ WebSocket (synchronisation)
+
+  async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer) {
+    if (typeof raw !== 'string' || raw.length > MAX_SNAPSHOT + 1024) return ws.close(1009, 'Message trop volumineux');
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(raw);
+    } catch {
+      return ws.close(1003, 'JSON invalide');
+    }
+    const att = (ws.deserializeAttachment() ?? { ok: false }) as Attachment;
+
+    if (!att.ok) {
+      if (msg.t !== 'hello' || !(await this.checkToken(msg.token))) return ws.close(4003, 'Accès refusé');
+      const device = typeof msg.device === 'string' && DEVICE_RE.test(msg.device) ? msg.device : undefined;
+      ws.serializeAttachment({ ok: true, device } satisfies Attachment);
+      const since = Number(msg.since) || 0;
+      const snap = this.sql.exec<{ seq: number; data: string }>('SELECT seq, data FROM snapshot').toArray()[0];
+      let from = since;
+      if (snap && since < snap.seq) {
+        ws.send(JSON.stringify({ t: 'snapshot', seq: snap.seq, data: snap.data }));
+        from = snap.seq;
+      }
+      for (const row of this.sql.exec<{ seq: number; data: string; device: string }>(
+        'SELECT seq, data, device FROM log WHERE seq > ? ORDER BY seq',
+        from,
+      )) {
+        ws.send(JSON.stringify({ t: 'batch', seq: row.seq, data: row.data, device: row.device }));
+      }
+      ws.send(JSON.stringify({ t: 'ready', seq: this.head(), closed: !!this.meta('closed') }));
+      return;
+    }
+
+    if (msg.t === 'ping') return ws.send(JSON.stringify({ t: 'pong' }));
+
+    if (msg.t === 'push') {
+      if (this.meta('closed')) return ws.send(JSON.stringify({ t: 'error', id: msg.id, error: 'closed' }));
+      if (typeof msg.data !== 'string' || msg.data.length > MAX_BATCH) {
+        return ws.send(JSON.stringify({ t: 'error', id: msg.id, error: 'too_large' }));
+      }
+      const seq = this.sql
+        .exec<{ seq: number }>('INSERT INTO log (device, data, at) VALUES (?, ?, ?) RETURNING seq', att.device ?? '', msg.data, Date.now())
+        .one().seq;
+      ws.send(JSON.stringify({ t: 'ack', id: msg.id, seq }));
+      const out = JSON.stringify({ t: 'batch', seq, data: msg.data, device: att.device ?? '' });
+      for (const other of this.ctx.getWebSockets()) {
+        if (other === ws) continue;
+        const a = other.deserializeAttachment() as Attachment | null;
+        if (a?.ok) {
+          try {
+            other.send(out);
+          } catch {
+            /* socket fermée */
+          }
+        }
+      }
+      return;
+    }
+
+    // Compaction : un appareil fournit un instantané chiffré de tout l'état jusqu'à `seq`.
+    if (msg.t === 'snapshot') {
+      const seq = Number(msg.seq);
+      if (typeof msg.data !== 'string' || msg.data.length > MAX_SNAPSHOT || !(seq > 0) || seq > this.head()) return;
+      const current = this.sql.exec<{ seq: number }>('SELECT seq FROM snapshot').toArray()[0]?.seq ?? 0;
+      if (seq <= current) return;
+      this.sql.exec('INSERT OR REPLACE INTO snapshot (id, seq, data) VALUES (1, ?, ?)', seq, msg.data);
+      this.sql.exec('DELETE FROM log WHERE seq <= ?', seq);
+      return;
+    }
+  }
+
+  async webSocketClose(ws: WebSocket, code: number) {
+    try {
+      ws.close(code === 1005 ? 1000 : code, 'bye');
+    } catch {
+      /* déjà fermée */
+    }
+  }
+}

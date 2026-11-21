@@ -1,59 +1,80 @@
-import { useState } from 'react';
-import { HeartHandshake } from 'lucide-react';
-import { api, type Me, type Member } from '../api';
-import { useSession } from '../store';
+import { useCallback, useEffect, useState } from 'react';
+import { HeartHandshake, Lock } from 'lucide-react';
+import { randomId } from '../lib/bytes';
+import { parseInviteLink } from '../lib/invite';
+import { RELAY_URL } from '../lib/sync';
+import type { Member } from '../lib/engine';
+import { useCollection, useEngine, useSyncStatus } from '../store';
 import { ColorPicker, Field, PALETTE } from '../ui';
+import { JoinWaiting } from './Join';
+import { Scanner } from './Scanner';
 
 type Mode = 'choose' | 'create' | 'join';
 
+function Hero() {
+  return (
+    <div className="onboarding-hero">
+      <HeartHandshake size={64} />
+      <h1>Notre famille</h1>
+      <p>Listes, agenda, anniversaires, repas, messages… gardés sur vos téléphones et partagés en privé, chiffrés de bout en bout.</p>
+    </div>
+  );
+}
+
+/** Lien d'invitation ouvert directement (#/join/…) : on le retire aussitôt de l'adresse. */
+function inviteFromUrl(): Uint8Array<ArrayBuffer> | null {
+  const s = parseInviteLink(location.hash);
+  if (s) history.replaceState(null, '', `${location.pathname}#/`);
+  return s;
+}
+
 export function Onboarding() {
-  const { setMe } = useSession();
-  const [mode, setMode] = useState<Mode>('choose');
+  const engine = useEngine();
+  const [initialInvite] = useState(inviteFromUrl);
+  const [mode, setMode] = useState<Mode>(initialInvite ? 'join' : 'choose');
+  const [invite, setInvite] = useState<Uint8Array<ArrayBuffer> | null>(initialInvite);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-
   const [familyName, setFamilyName] = useState('');
   const [name, setName] = useState('');
   const [color, setColor] = useState(PALETTE[5]);
-  const [code, setCode] = useState('');
-  const [found, setFound] = useState<{ familyName: string; members: Member[] } | null>(null);
+  const [paste, setPaste] = useState('');
+  const [scanning, setScanning] = useState(false);
 
-  const run = async (fn: () => Promise<void>) => {
-    setError('');
+  const onScan = useCallback((text: string) => {
+    setScanning(false);
+    const s = parseInviteLink(text);
+    if (s) setInvite(s);
+    else setError("Ce QR code n'est pas une invitation valide.");
+  }, []);
+
+  const create = async () => {
     setBusy(true);
+    setError('');
     try {
-      await fn();
+      await engine.createCircle(familyName.trim(), name.trim(), color);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erreur');
-    } finally {
+      setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
     }
   };
 
-  const create = () =>
-    run(async () => setMe(await api<Me>('POST', '/families', { familyName, memberName: name, color })));
-  const lookup = () => run(async () => setFound(await api('POST', '/join/lookup', { inviteCode: code })));
-  const join = (memberId?: string) =>
-    run(async () =>
-      setMe(await api<Me>('POST', '/join', memberId ? { inviteCode: code, memberId } : { inviteCode: code, memberName: name, color })),
-    );
-
   return (
     <div className="onboarding">
-      <div className="onboarding-hero">
-        <HeartHandshake size={64} />
-        <h1>Notre famille</h1>
-        <p>Listes, agenda, anniversaires, repas, messages… tout au même endroit, pour toute la famille.</p>
-      </div>
+      <Hero />
 
       {mode === 'choose' && (
         <div className="stack">
           <button className="btn primary big" onClick={() => setMode('create')}>
-            Créer notre espace famille
+            Créer notre cercle familial
           </button>
           <button className="btn big" onClick={() => setMode('join')}>
-            J'ai un code d'invitation
+            J'ai une invitation
           </button>
+          <p className="muted center small">
+            <Lock size={14} /> Vos données restent sur vos appareils.
+            {RELAY_URL ? ' Le partage passe par un relais qui ne voit que des données chiffrées.' : ' (Mode local : aucun partage configuré.)'}
+          </p>
         </div>
       )}
 
@@ -78,56 +99,96 @@ export function Onboarding() {
         </form>
       )}
 
-      {mode === 'join' && !found && (
-        <form className="card form" onSubmit={(e) => (e.preventDefault(), lookup())}>
-          <Field label="Code d'invitation">
-            <input
-              autoFocus
-              value={code}
-              onChange={(e) => setCode(e.target.value.toUpperCase())}
-              placeholder="ABCD-EFGH"
-              autoCapitalize="characters"
-              autoComplete="off"
-              className="code-input"
-            />
+      {mode === 'join' && invite && <JoinWaiting secret={invite} onCancel={() => (setInvite(null), setMode('choose'))} />}
+
+      {mode === 'join' && !invite && (
+        <div className="card form">
+          <p className="muted">Demandez à un membre de la famille : Ma Famille → « Inviter / ajouter un appareil ».</p>
+          {scanning ? (
+            <Scanner onResult={onScan} />
+          ) : (
+            <button className="btn primary" onClick={() => setScanning(true)}>
+              Scanner le QR code
+            </button>
+          )}
+          <Field label="… ou collez le lien reçu">
+            <input value={paste} onChange={(e) => setPaste(e.target.value)} placeholder="https://…#/join/…" autoComplete="off" />
           </Field>
           {error && <p className="error">{error}</p>}
-          <button className="btn primary" disabled={busy || code.replace(/[^A-Za-z0-9]/g, '').length < 8}>
+          <button
+            className="btn"
+            disabled={!paste.trim()}
+            onClick={() => {
+              const s = parseInviteLink(paste);
+              if (s) setInvite(s);
+              else setError('Lien invalide');
+            }}
+          >
             Continuer
           </button>
-          <button type="button" className="link" onClick={() => setMode('choose')}>
-            Retour
-          </button>
-        </form>
-      )}
-
-      {mode === 'join' && found && (
-        <div className="card form">
-          <h2>Rejoindre « {found.familyName} »</h2>
-          <p className="muted">Qui êtes-vous ?</p>
-          <div className="chips">
-            {found.members.map((m) => (
-              <button key={m.id} className="chip on" style={{ background: m.color, borderColor: m.color }} onClick={() => join(m.id)} disabled={busy}>
-                {m.name}
-              </button>
-            ))}
-          </div>
-          <p className="muted">… ou je suis nouveau :</p>
-          <Field label="Votre prénom">
-            <input value={name} onChange={(e) => setName(e.target.value)} />
-          </Field>
-          <Field label="Votre couleur">
-            <ColorPicker value={color} onChange={setColor} />
-          </Field>
-          {error && <p className="error">{error}</p>}
-          <button className="btn primary" onClick={() => join()} disabled={busy || !name.trim()}>
-            Rejoindre
-          </button>
-          <button type="button" className="link" onClick={() => setFound(null)}>
+          <button type="button" className="link" onClick={() => (setScanning(false), setMode('choose'))}>
             Retour
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Après avoir rejoint un cercle : qui êtes-vous ? */
+export function ChooseMember() {
+  const engine = useEngine();
+  const status = useSyncStatus();
+  const { docs: members } = useCollection<Member>('members');
+  const [name, setName] = useState('');
+  const [color, setColor] = useState(PALETTE[8]);
+  const [waited, setWaited] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setWaited(true), 8000);
+    return () => clearTimeout(t);
+  }, []);
+
+  const pick = async (id: string) => {
+    await engine.setMember(id);
+    await engine.registerDevice();
+  };
+
+  return (
+    <div className="onboarding">
+      <Hero />
+      <div className="card form">
+        <h2>Qui êtes-vous ?</h2>
+        {!members.length && !waited && status !== 'online' ? (
+          <p className="muted">Synchronisation des données de la famille…</p>
+        ) : (
+          <div className="chips">
+            {members.map((m) => (
+              <button key={m.id} className="chip on" style={{ background: m.color, borderColor: m.color }} onClick={() => pick(m.id)}>
+                {m.name}
+              </button>
+            ))}
+          </div>
+        )}
+        <p className="muted">… ou je suis nouveau :</p>
+        <Field label="Votre prénom">
+          <input value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field label="Votre couleur">
+          <ColorPicker value={color} onChange={setColor} />
+        </Field>
+        <button
+          className="btn primary"
+          disabled={!name.trim()}
+          onClick={async () => {
+            const id = randomId();
+            await engine.setMember(id);
+            await engine.replica.upsert<Member>('members', id, { name: name.trim(), color });
+            await engine.registerDevice();
+          }}
+        >
+          Rejoindre
+        </button>
+      </div>
     </div>
   );
 }

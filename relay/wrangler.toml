@@ -1,0 +1,23 @@
+name = "family-app-relay"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+[vars]
+# Origine(s) autorisée(s), séparées par des virgules. Ex. : "https://ehplodor.github.io"
+ALLOWED_ORIGINS = "*"
+# Contact transmis aux services push (Google, Apple, Mozilla) en cas de problème.
+VAPID_SUBJECT = "mailto:relay@example.invalid"
+# VAPID_PUBLIC_KEY et VAPID_PRIVATE_JWK : générés par `npm run vapid`
+# (la clé privée se règle avec `npx wrangler secret put VAPID_PRIVATE_JWK`).
+
+[[durable_objects.bindings]]
+name = "CIRCLE"
+class_name = "Circle"
+
+[[durable_objects.bindings]]
+name = "INVITE"
+class_name = "Invite"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Circle", "Invite"]
