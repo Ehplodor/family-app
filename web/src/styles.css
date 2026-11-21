@@ -517,6 +517,14 @@ small {
   padding: 6px 4px 0;
   margin-bottom: 8px;
 }
+.kanban-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.kanban-progress .progress {
+  width: auto;
+}
 .bullets {
   margin: 0;
   padding-left: 20px;
@@ -740,7 +748,7 @@ small {
   padding: 4px 0;
 }
 .cal-day {
-  height: 46px;
+  height: 50px;
   border-radius: 14px;
   display: flex;
   flex-direction: column;
@@ -777,6 +785,38 @@ small {
 }
 .cal-day.selected .dots i {
   background: #fff !important;
+}
+/* Événements sur plusieurs jours : traits fins et continus, d'une case à l'autre. */
+.spans {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  align-self: stretch;
+}
+.spans i {
+  height: 3px;
+  margin: 0 -1px;
+}
+.spans i.on {
+  opacity: 0.75;
+}
+.spans i.start {
+  margin-left: 5px;
+  border-top-left-radius: 2px;
+  border-bottom-left-radius: 2px;
+}
+.spans i.end {
+  margin-right: 5px;
+  border-top-right-radius: 2px;
+  border-bottom-right-radius: 2px;
+}
+.cal-day.selected .spans i.on {
+  background: #fff !important;
+}
+.agenda-note {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
 }
 .day-title {
   font-size: 18px;
@@ -1361,4 +1401,26 @@ hr {
   height: 14px;
   border-radius: 4px;
   flex-shrink: 0;
+}
+
+/* ---------- Calendrier : filtre par personne et recherche ---------- */
+.cal-filter {
+  margin-bottom: 12px;
+  overflow-x: auto;
+}
+.cal-filter .chips {
+  flex-wrap: nowrap;
+}
+.cal-filter .chip {
+  white-space: nowrap;
+}
+.cal-search {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+/* En-tête chargé (calendrier) : icônes plus serrées pour garder le titre lisible sur téléphone. */
+.icon-btn.compact {
+  width: 32px;
 }
