@@ -30,6 +30,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: Vérifier l'adresse du relais
+        env:
+          RELAY_URL: ${{ vars.RELAY_URL }}
+        run: |
+          if [ -z "$RELAY_URL" ]; then
+            echo "::warning title=Mode local::Variable RELAY_URL vide : l'appli publiée fonctionnera sans partage ni notifications. Déployez le relais (Actions → Relay) puis renseignez RELAY_URL."
+          fi
       - run: npm run build
         env:
           VITE_RELAY_URL: ${{ vars.RELAY_URL }}

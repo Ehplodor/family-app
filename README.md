@@ -42,47 +42,79 @@ cercle familial **chiffrées de bout en bout**. Elle se publie sur **GitHub Page
 | Sécurité | Appareils, retrait d'un appareil, code du cercle, sauvegarde, effacement |
 | Personnaliser | Tuiles de l'accueil, ordre, couleur, nom de la famille |
 
-## Mise en ligne (une fois, environ 15 minutes)
+## Mise en ligne (une fois, environ 15 minutes, possible depuis un téléphone)
 
-### 1. Le relais (Cloudflare Workers, offre gratuite)
+Tout se fait dans le navigateur du téléphone, sur deux sites : **Cloudflare** (pour le relais) et **GitHub**
+(pour l'appli). Aucun ordinateur n'est nécessaire.
 
-Il faut un compte Cloudflare gratuit.
+### Étape 1 — Créer le compte Cloudflare et choisir son adresse
+
+1. Ouvrez **dash.cloudflare.com** et créez un compte gratuit (adresse e-mail + mot de passe, puis validez l'e-mail).
+2. Dans le menu, ouvrez **Workers & Pages** (parfois sous *Compute*). Si Cloudflare vous demande de choisir un
+   **sous-domaine `workers.dev`**, choisissez-en un (par exemple votre pseudo). Il fera partie de l'adresse du
+   relais : `https://family-app-relay.<sous-domaine>.workers.dev`.
+
+### Étape 2 — Créer une clé d'accès Cloudflare pour GitHub
+
+1. Toujours sur Cloudflare : icône de profil (en haut à droite) → **Profile** → **API Tokens** → **Create Token**.
+2. Choisissez le modèle **Edit Cloudflare Workers** → **Use template**.
+3. *Account Resources* : votre compte. *Zone Resources* : **All zones**. Puis **Continue to summary** →
+   **Create Token**.
+4. **Copiez le jeton affiché**. Il ne sera plus jamais montré ; en cas de perte, il suffit d'en recréer un.
+
+### Étape 3 — Donner cette clé à GitHub
+
+Sur **github.com**, dans votre dépôt : **Settings** → **Secrets and variables** → **Actions** → onglet **Secrets** →
+**New repository secret** :
+
+- **Name** : `CLOUDFLARE_API_TOKEN`
+- **Secret** : collez le jeton → **Add secret**
+
+Ce secret est chiffré par GitHub. Il n'est visible ni dans le dépôt, ni dans les journaux, ni par les forks.
+
+### Étape 4 — Déployer le relais
+
+Onglet **Actions** → **Relay** (dans la liste de gauche, ou le menu ☰ sur mobile) → **Run workflow** → branche
+`main` → **Run workflow**.
+
+Le workflow vérifie le code (tests sur un relais local), déploie le relais, crée **une seule fois** les clés de
+notification et contrôle que le relais répond. Comptez 2 à 3 minutes. Ouvrez ensuite l'exécution terminée : son
+**résumé** affiche l'adresse du relais.
+
+Il se relancera tout seul à chaque modification du code du relais sur `main`.
+
+### Étape 5 — Indiquer l'adresse du relais à l'appli
+
+**Settings** → **Secrets and variables** → **Actions** → onglet **Variables** → **Repository variables** →
+`RELAY_URL` (**New repository variable**, ou le crayon ✏️ si elle existe déjà) : collez l'adresse **exacte**
+du résumé, par exemple `https://family-app-relay.mon-compte.workers.dev`.
+
+- Pas dans *Secrets* : l'adresse n'est pas secrète, elle figure dans l'appli publiée.
+- Pas dans *Environment variables* : la construction ne les voit pas.
+- Une adresse invalide (par exemple avec `<compte>` laissé tel quel) fait échouer la construction avec un message
+  explicite.
+
+### Étape 6 — Publier l'appli sur GitHub Pages
+
+1. **Settings** → **Pages** → *Build and deployment* → *Source* : **GitHub Actions**.
+2. **Settings** → **Environments** → **github-pages** → *Deployment branches and tags* : vérifiez que **`main`** est
+   autorisée. GitHub n'autorise que la branche par défaut du moment où Pages a été activé.
+3. **Actions** → **GitHub Pages** → **Run workflow**. L'appli est en ligne sur `https://<compte>.github.io/family-app/`.
+
+### Sur un ordinateur (facultatif)
+
+Les mêmes étapes sont possibles en ligne de commande :
 
 ```bash
-cd relay
-npm ci
-npx wrangler login
-npm run vapid            # génère les clés d'identification push (VAPID)
+cd relay && npm ci && npx wrangler login
+npx wrangler deploy                       # affiche l'adresse du relais
+npm run vapid                             # puis : npx wrangler secret put VAPID_PUBLIC_KEY / VAPID_PRIVATE_JWK
 ```
 
-- Copiez la **clé publique** affichée dans `relay/wrangler.toml`, section `[vars]` : `VAPID_PUBLIC_KEY = "…"`.
-- Réglez aussi :
-  - `ALLOWED_ORIGINS = "https://<votre-compte>.github.io"` ;
-  - `VAPID_SUBJECT = "mailto:<une adresse de contact>"`.
-- Enregistrez la **clé privée** comme secret (collez-la quand on vous la demande) :
-
-```bash
-npx wrangler secret put VAPID_PRIVATE_JWK
-npx wrangler deploy      # affiche l'adresse : https://family-app-relay.<compte>.workers.dev
-```
-
-Vous pouvez aussi déployer le relais depuis GitHub (onglet *Actions → Relay*) avec les secrets
-`CLOUDFLARE_API_TOKEN` et `CLOUDFLARE_ACCOUNT_ID`.
-
-### 2. L'appli sur GitHub Pages
-
-1. *Settings → Pages → Build and deployment → Source* : **GitHub Actions**.
-2. *Settings → Secrets and variables → Actions* → onglet **Variables** → **Repository variables** → *New repository
-   variable* : `RELAY_URL` = l'adresse **exacte** affichée par `npx wrangler deploy`
-   (ex. `https://family-app-relay.mon-compte.workers.dev`).
-   - Pas dans *Secrets* : l'adresse n'est pas secrète, elle figure dans l'appli publiée.
-   - Pas dans *Environment variables* : la construction ne les voit pas.
-   - Une adresse invalide (par exemple avec `<compte>` laissé tel quel) fait échouer la construction avec un message
-     explicite.
-3. *Settings → Environments → github-pages → Deployment branches and tags* : vérifiez que **`main`** est autorisée.
-   GitHub n'autorise que la branche par défaut du moment où Pages a été activé.
-4. Poussez sur `main` (ou *Actions → GitHub Pages → Run workflow*) : le workflow lance les tests, construit et publie
-   l'appli sur `https://<compte>.github.io/family-app/`.
+Le workflow règle automatiquement `ALLOWED_ORIGINS` (`https://<compte>.github.io`) et `VAPID_SUBJECT` (l'adresse
+du site) d'après le nom du dépôt. En ligne de commande, ce sont les valeurs de `relay/wrangler.toml` qui
+s'appliquent. Avec un domaine personnalisé, créez la variable de dépôt `RELAY_ALLOWED_ORIGINS`
+(ex. `https://famille.mondomaine.fr`).
 
 > 🔐 **Important pour la sécurité :**
 > - Activez l'**authentification à deux facteurs** sur GitHub et protégez la branche `main` : le code publié a accès
@@ -104,7 +136,7 @@ garde-fous, réglables dans `relay/wrangler.toml` :
 
 | Réglage | Défaut | Rôle |
 | --- | --- | --- |
-| `ALLOWED_ORIGINS` | `https://ehplodor.github.io` | Seul ce site peut utiliser le relais depuis un navigateur. **Si vous forkez le dépôt, mettez l'adresse de votre site.** |
+| `ALLOWED_ORIGINS` | `https://<compte>.github.io` | Seul ce site peut utiliser le relais depuis un navigateur. Le workflow le règle automatiquement d'après le nom du dépôt, y compris pour un fork. |
 | `NEW_CIRCLES_PER_IP_PER_DAY` | 3 | Nouvelles familles par connexion et par jour. Le relais ne garde qu'une empreinte « adresse + jour », effacée sous 2 jours. |
 | `NEW_CIRCLES_PER_DAY` | 100 | Nouvelles familles par jour, toutes connexions confondues |
 | `CIRCLE_QUOTA_START_MB` / `CIRCLE_QUOTA_PER_DAY_MB` / `CIRCLE_QUOTA_MB` | 20 / 10 / 250 | **Quota progressif** : une famille commence avec 20 Mo, gagne 10 Mo par jour, jusqu'à 250 Mo. Une vraie famille ne s'en aperçoit pas ; personne ne peut remplir le relais d'un coup. |
@@ -127,7 +159,7 @@ soumis aux garde-fous.
   pays et l'ampleur d'usage, une mention légale ou un contact peut être attendu ; renseignez-vous si le service
   dépasse le cercle de vos proches.
 
-### 3. Sur les téléphones
+### Installer l’appli sur les téléphones
 
 - **Android** : ouvrir l'adresse dans Chrome, puis menu ⋮ → *Installer l'application*.
 - **iPhone** : Safari → Partager → *Sur l'écran d'accueil*, puis **ouvrir depuis l'icône**. Le stockage de l'appli
@@ -151,7 +183,7 @@ Pour tester le service worker, les notifications et le hors ligne, construisez l
 | Commande | Rôle |
 | --- | --- |
 | `npm test` | Tests unitaires : fusion des données (CRDT), cryptographie, calcul des rappels, planification école |
-| `npm run relay:test` | Tests d'intégration du relais : authentification, synchro, Web Push déchiffré par une implémentation de référence, invitations, garde-fous du service public (relais lancé avec `npm --prefix relay run dev:test`) |
+| `npm --prefix relay run test:ci` | Tests d'intégration du relais : authentification, synchro, Web Push déchiffré par une implémentation de référence, invitations, garde-fous du service public. Lance et arrête lui-même un relais local. |
 | `npm run typecheck` | Vérification TypeScript |
 | `npm run build` | Construit l'appli et le service worker dans `dist/` |
 

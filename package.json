@@ -11,7 +11,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p .",
     "relay:dev": "npm --prefix relay run dev",
-    "relay:test": "npm --prefix relay test"
+    "relay:test": "npm --prefix relay run test:ci"
   },
   "devDependencies": {
     "@types/react": "^19.1.0",

@@ -9,7 +9,8 @@
     "deploy": "wrangler deploy",
     "vapid": "node scripts/vapid.mjs",
     "test": "node --test test/*.test.mjs",
-    "dev:test": "wrangler dev --port 8787 --ip 127.0.0.1 --var ALLOWED_ORIGINS:* --var ALLOW_TEST_BUCKETS:1 --var NEW_CIRCLES_PER_IP_PER_DAY:3 --var NEW_CIRCLES_PER_DAY:5 --var CIRCLE_QUOTA_START_MB:0.5 --var CIRCLE_QUOTA_PER_DAY_MB:0.25 --var CIRCLE_QUOTA_MB:1 --var INACTIVE_DAYS:0.0002"
+    "dev:test": "wrangler dev --port 8787 --ip 127.0.0.1 --var ALLOWED_ORIGINS:* --var ALLOW_TEST_BUCKETS:1 --var NEW_CIRCLES_PER_IP_PER_DAY:3 --var NEW_CIRCLES_PER_DAY:5 --var CIRCLE_QUOTA_START_MB:0.5 --var CIRCLE_QUOTA_PER_DAY_MB:0.25 --var CIRCLE_QUOTA_MB:1 --var INACTIVE_DAYS:0.0002",
+    "test:ci": "bash scripts/test-ci.sh"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.0.0",
