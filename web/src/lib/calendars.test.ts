@@ -94,3 +94,20 @@ describe('import .ics', () => {
     expect(normalizeIcsUrl('pas une adresse')).toBeNull();
   });
 });
+
+describe('calendrier volumineux', () => {
+  it('limite la taille pour ne pas bloquer la synchronisation', async () => {
+    const { MAX_CALENDAR_BYTES } = await import('./calendars');
+    const long = 'x'.repeat(400);
+    const body = Array.from({ length: 3000 }, (_, i) => {
+      const d = new Date(Date.UTC(2026, 0, 1) + i * 3600_000 * 6);
+      const stamp = d.toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z';
+      return `BEGIN:VEVENT\nDTSTART:${stamp}\nSUMMARY:${long} ${i}\nEND:VEVENT`;
+    }).join('\n');
+    const { events } = parseIcs(`BEGIN:VCALENDAR\n${body}\nEND:VCALENDAR`, '2026-11-21');
+    expect(events.length).toBeGreaterThan(100);
+    expect(JSON.stringify(events).length).toBeLessThanOrEqual(MAX_CALENDAR_BYTES);
+    expect(events.every((e) => e.t.length <= 150)).toBe(true);
+    expect(events.some((e) => e.d === '2026-11-21')).toBe(true); // les plus proches d'aujourd'hui sont gardés
+  });
+});
