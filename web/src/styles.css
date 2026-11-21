@@ -517,6 +517,14 @@ small {
   padding: 6px 4px 0;
   margin-bottom: 8px;
 }
+.kanban-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.kanban-progress .progress {
+  width: auto;
+}
 .bullets {
   margin: 0;
   padding-left: 20px;
