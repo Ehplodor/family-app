@@ -235,6 +235,8 @@ multiplier les cercles « anciens » à partir d'un seul.
 - **Mode chevet** : un site ne peut pas régler la luminosité du téléphone. L'écran reste donc noir (pixels
   éteints sur OLED) avec une horloge très pâle qui se déplace chaque minute (anti-marquage). Un toucher ou un
   mouvement du téléphone (`devicemotion`, Android) la rend lisible 10 s ; l'écran de sonnerie est lumineux.
+  Au choix : horloge pâle, noir complet (rien d'allumé hors toucher), ou fonds animés originaux très sombres
+  (tuyaux, aquarium ; canvas à environ 12 images/s, `web/src/pages/Screensaver.tsx`).
 - **Appli fermée** : les sonneries des 7 prochains jours sont envoyées au relais avec les autres rappels de
   l'appareil (une notification à l'heure, puis deux relances à +3 et +6 min, même étiquette). La notification
   est insistante (`requireInteraction`, vibration) avec « Répéter » et, sans défi, « Arrêter ». L'heure de la

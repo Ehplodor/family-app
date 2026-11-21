@@ -15,7 +15,8 @@ import {
   type AlarmMode,
 } from '../lib/alarms';
 import { alarmDoneAt, markAlarmDone } from '../lib/alarmState';
-import { useCollection, useDoc, useEngine, useMe, useNotifier, type Doc } from '../store';
+import { useCollection, useDoc, useEngine, useLocalState, useMe, useNotifier, type Doc } from '../store';
+import { SAVER_LABEL, Screensaver, type SaverKind } from './Screensaver';
 import { navigate } from '../router';
 import { Empty, Fab, Field, FieldGroup, Page, Sheet, confirmDelete } from '../ui';
 
@@ -564,6 +565,7 @@ function Bedside() {
   const [now, setNow] = useState(Date.now());
   const [awakeUntil, setAwakeUntil] = useState(Date.now() + AWAKE_MS);
   const [shift, setShift] = useState({ x: 0, y: 0 });
+  const [saver, setSaver] = useLocalState<SaverKind>('bedsideSaver', 'none');
   const awake = now < awakeUntil;
   useWakeLock();
   useEffect(() => {
@@ -594,13 +596,23 @@ function Bedside() {
     .sort((a, b) => a - b)[0];
   return (
     <div
-      className={`bedside ${awake ? 'awake' : ''}`}
+      className={`bedside ${awake ? 'awake' : ''} ${saver === 'black' ? 'black' : ''}`}
       onClick={() => {
         // Premier toucher : on rallume l'affichage ; toucher à nouveau pour quitter.
         if (awake) location.replace('#/m/alarms');
         else setAwakeUntil(Date.now() + AWAKE_MS);
       }}
     >
+      <Screensaver kind={saver} />
+      {awake && (
+        <div className="chips bedside-savers" onClick={(e) => e.stopPropagation()}>
+          {(Object.keys(SAVER_LABEL) as SaverKind[]).map((k) => (
+            <button key={k} type="button" className={`chip ${saver === k ? 'on' : ''}`} onClick={() => setSaver(k)}>
+              {SAVER_LABEL[k]}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="bedside-inner" style={{ transform: `translate(${shift.x}px, ${shift.y}px)` }}>
         <span className="bedside-clock">{hhmm(now)}</span>
         <span className="bedside-next">{next ? `⏰ ${hhmm(next)} · ${untilLabel(next, now)}` : 'Aucun réveil programmé sur cet appareil'}</span>
