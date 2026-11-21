@@ -13,11 +13,13 @@ const token = () => crypto.randomBytes(32).toString('base64url');
 // (en production, c'est Cloudflare qui le fixe : impossible à falsifier).
 const randomIp = () => `198.51.100.${crypto.randomInt(1, 254)}-${hex().slice(0, 6)}`;
 
-async function call(method, path, tok, body, ip = randomIp()) {
+// X-Test-Bucket cloisonne le plafond global entre les tests (accepté seulement avec ALLOW_TEST_BUCKETS=1).
+async function call(method, path, tok, body, ip = randomIp(), bucket = hex()) {
   const res = await fetch(BASE + path, {
     method,
     headers: {
       'CF-Connecting-IP': ip,
+      'X-Test-Bucket': bucket,
       ...(tok ? { Authorization: `Bearer ${tok}` } : {}),
       ...(body && !(body instanceof Uint8Array) ? { 'Content-Type': 'application/json' } : {}),
     },
@@ -166,9 +168,9 @@ test('invitation : boîte aux lettres à usage unique', async () => {
   assert.equal((await call('GET', `/i/${id}/response`)).status, 410);
 });
 
-test('relais public : nouveaux cercles limités par connexion et par jour', async () => {
+test('relais public : nouvelles familles limitées par connexion et par jour', async () => {
   const limits = (await call('GET', '/limits')).body;
-  assert.equal(limits.newCirclesPerDay, 3, 'lancer le relais avec `npm run dev:test`');
+  assert.equal(limits.newCirclesPerIpPerDay, 3, 'lancer le relais avec `npm run dev:test`');
   const ip = randomIp();
   const circles = Array.from({ length: 4 }, () => ({ id: hex(), tok: token() }));
   const statuses = [];
@@ -176,25 +178,41 @@ test('relais public : nouveaux cercles limités par connexion et par jour', asyn
   assert.deepEqual(statuses, [200, 200, 200, 429]);
   // Une famille existante se reconnecte sans être comptée
   assert.equal((await call('POST', `/c/${circles[0].id}/register`, null, { token: circles[0].tok }, ip)).status, 200);
-  // Une autre connexion peut toujours créer son cercle
+  // Une autre connexion peut toujours créer sa famille
   assert.equal((await call('POST', `/c/${hex()}/register`, null, { token: token() })).status, 200);
+
+  // Renouvellement de clé : la même famille, pas comptée… à condition de prouver le jeton de l'ancien cercle
+  const rotated = { from: circles[0].id, fromToken: circles[0].tok };
+  assert.equal((await call('POST', `/c/${hex()}/register`, null, { token: token(), ...rotated }, ip)).status, 200);
+  const forged = { from: circles[0].id, fromToken: token() };
+  assert.equal((await call('POST', `/c/${hex()}/register`, null, { token: token(), ...forged }, ip)).status, 429);
 });
 
-test('relais public : quota d’espace par famille', async () => {
+test('relais public : plafond global de nouvelles familles par jour', async () => {
+  const limits = (await call('GET', '/limits')).body;
+  assert.equal(limits.newCirclesPerDay, 5);
+  const bucket = hex(); // un « jour » isolé pour ce test
+  const statuses = [];
+  for (let i = 0; i < 6; i++) statuses.push((await call('POST', `/c/${hex()}/register`, null, { token: token() }, randomIp(), bucket)).status);
+  assert.deepEqual(statuses, [200, 200, 200, 200, 200, 429]);
+});
+
+test('relais public : quota progressif par famille', async () => {
   const circle = hex();
   const tok = token();
   await call('POST', `/c/${circle}/register`, null, { token: tok });
-  const big = new Uint8Array(600 * 1024);
-  assert.equal((await call('PUT', `/c/${circle}/blobs/${hex()}`, tok, big)).status, 200);
-  const full = await call('PUT', `/c/${circle}/blobs/${hex()}`, tok, big);
+  // En test : 0,5 Mo le premier jour (au lieu de 20 Mo), maximum 1 Mo
+  const photo = new Uint8Array(300 * 1024);
+  assert.equal((await call('PUT', `/c/${circle}/blobs/${hex()}`, tok, photo)).status, 200);
+  const full = await call('PUT', `/c/${circle}/blobs/${hex()}`, tok, photo);
   assert.equal(full.status, 507);
-  assert.match(full.body.error, /plein/);
+  assert.match(full.body.error, /pour l'instant/);
   // Le quota bloque aussi le journal de synchronisation
   const ws = socket(circle);
   await ws.open;
   ws.send({ t: 'hello', token: tok, since: 0 });
   await ws.next((m) => m.t === 'ready');
-  ws.send({ t: 'push', id: 'q', data: 'x'.repeat(500 * 1024) });
+  ws.send({ t: 'push', id: 'q', data: 'x'.repeat(300 * 1024) });
   assert.equal((await ws.next((m) => m.t === 'error')).error, 'quota');
   ws.ws.close();
 });

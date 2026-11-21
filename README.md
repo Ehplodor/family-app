@@ -104,9 +104,19 @@ garde-fous, réglables dans `relay/wrangler.toml` :
 
 | Réglage | Défaut | Rôle |
 | --- | --- | --- |
-| `NEW_CIRCLES_PER_IP_PER_DAY` | 10 | Nouveaux cercles par connexion et par jour. Le relais ne conserve qu'une empreinte « adresse + jour », effacée après 2 jours. |
-| `CIRCLE_QUOTA_MB` | 250 | Espace maximum par famille (surtout les photos, déjà réduites avant envoi) |
-| `INACTIVE_DAYS` | 400 | Un cercle sans aucune connexion pendant ce délai est effacé du relais. Ses données restent sur les appareils et sont renvoyées si l'un d'eux revient. |
+| `ALLOWED_ORIGINS` | `https://ehplodor.github.io` | Seul ce site peut utiliser le relais depuis un navigateur. **Si vous forkez le dépôt, mettez l'adresse de votre site.** |
+| `NEW_CIRCLES_PER_IP_PER_DAY` | 3 | Nouvelles familles par connexion et par jour. Le relais ne garde qu'une empreinte « adresse + jour », effacée sous 2 jours. |
+| `NEW_CIRCLES_PER_DAY` | 100 | Nouvelles familles par jour, toutes connexions confondues |
+| `CIRCLE_QUOTA_START_MB` / `CIRCLE_QUOTA_PER_DAY_MB` / `CIRCLE_QUOTA_MB` | 20 / 10 / 250 | **Quota progressif** : une famille commence avec 20 Mo, gagne 10 Mo par jour, jusqu'à 250 Mo. Une vraie famille ne s'en aperçoit pas ; personne ne peut remplir le relais d'un coup. |
+| `INACTIVE_DAYS` | 400 | Une famille sans aucune connexion pendant ce délai est effacée du relais. Ses données restent sur les appareils et sont renvoyées si l'un d'eux revient. |
+
+Retirer un appareil (renouvellement de clé) crée un nouveau cercle sur le relais. Celui-ci **garde l'ancienneté** de
+l'ancien, sur preuve qu'il en détient le jeton, et ne compte pas comme une nouvelle famille.
+
+L'adresse du relais n'est pas un secret : elle figure dans l'appli publiée. La protection repose sur les garde-fous
+ci-dessus, qui s'appliquent à toute requête, d'où qu'elle vienne. `ALLOWED_ORIGINS` empêche en plus un autre site
+de se brancher sur votre relais. Un programme écrit exprès pourrait contourner ce dernier réglage, mais il resterait
+soumis aux garde-fous.
 
 - **Coût** : avec l'offre gratuite de Cloudflare, il n'y a **pas de facture surprise**. Si les limites quotidiennes
   gratuites sont dépassées (environ 100 000 requêtes par jour), le relais refuse les requêtes jusqu'au lendemain.
@@ -130,7 +140,7 @@ garde-fous, réglables dans `relay/wrangler.toml` :
 
 ```bash
 npm install && npm --prefix relay install
-node relay/scripts/vapid.mjs --dev-vars > relay/.dev.vars   # clés VAPID locales
+node relay/scripts/vapid.mjs --dev-vars > relay/.dev.vars   # clés VAPID et limites relâchées pour le développement
 npm run relay:dev                                            # relais local sur http://127.0.0.1:8787
 VITE_RELAY_URL=http://127.0.0.1:8787 npm run dev             # appli sur http://localhost:5173
 ```

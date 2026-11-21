@@ -123,9 +123,16 @@ Les identifiants de cercle ne se devinent pas, et les jetons d'accès sont propr
 ouvert, les abus de ressources sont limités :
 
 - nombre de nouveaux cercles par connexion et par jour, compté avec une empreinte « adresse + jour » effacée sous
-  2 jours ;
-- quota d'espace par cercle ;
-- effacement des cercles inactifs.
+  2 jours, ainsi qu'un plafond global journalier ;
+- **quota progressif** par cercle : 20 Mo à l'arrivée, puis +10 Mo par jour jusqu'à 250 Mo. Le relais ne peut pas
+  distinguer une vraie photo chiffrée de données inutiles ; c'est donc le temps qui rend l'abus coûteux. Avec ces
+  réglages, remplir l'espace gratuit (environ 5 Go) demanderait des semaines d'efforts visibles au lieu de quelques
+  minutes ;
+- effacement des cercles inactifs ;
+- seul le site configuré (`ALLOWED_ORIGINS`) peut utiliser le relais depuis un navigateur.
+
+Lors d'un renouvellement de clé, le nouveau cercle prouve détenir le jeton de l'ancien : il garde son ancienneté
+(quota) et n'est pas compté comme une création.
 
 ### Menaces couvertes, et celles qui ne le sont pas
 
@@ -140,7 +147,8 @@ ouvert, les abus de ressources sont limités :
 | Code malveillant injecté dans la page | Politique CSP stricte : code et connexions limités à l'appli et au relais configuré |
 | **Compromission du dépôt GitHub** | ⚠️ Non couvert techniquement : le code servi par GitHub Pages a accès aux clés. **Activez l'authentification à deux facteurs, protégez la branche `main`, relisez les modifications.** Les actions GitHub sont épinglées par empreinte. |
 | **Autre site sur la même origine** | ⚠️ Toutes les pages `https://<compte>.github.io/*` partagent la même origine, donc le même stockage. **N'hébergez pas d'autres projets GitHub Pages sur ce compte, ou utilisez un domaine personnalisé** (ex. `famille.mondomaine.fr`). |
-| Visiteur malveillant qui crée des cercles en masse ou remplit l'espace | Limite de création par connexion et par jour, quota par cercle, effacement des cercles abandonnés |
+| Visiteur malveillant qui crée des cercles en masse ou remplit l'espace | Limites de création (par connexion et au total, par jour), quota progressif par cercle, effacement des cercles abandonnés |
+| Autre site (fork) qui se branche sur votre relais | `ALLOWED_ORIGINS` (navigateurs), et dans tous les cas les mêmes garde-fous |
 | Membre malveillant dans le cercle | Hors périmètre : tous les appareils du cercle sont de confiance. Un membre pourrait écrire au nom d'un autre. |
 
 ## Synchronisation : comment les modifications se fusionnent

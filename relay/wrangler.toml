@@ -3,13 +3,17 @@ main = "src/index.ts"
 compatibility_date = "2026-10-01"
 
 [vars]
-# Origine(s) autorisée(s), séparées par des virgules. Ex. : "https://ehplodor.github.io"
-ALLOWED_ORIGINS = "*"
+# Site(s) autorisé(s) à utiliser ce relais depuis un navigateur, séparés par des virgules.
+# Si vous forkez ce dépôt, mettez ici l'adresse de VOTRE site (ex. "https://<compte>.github.io").
+ALLOWED_ORIGINS = "https://ehplodor.github.io"
 # Contact transmis aux services push (Google, Apple, Mozilla) en cas de problème.
 VAPID_SUBJECT = "mailto:relay@example.invalid"
 # Garde-fous pour un relais ouvert au public :
-NEW_CIRCLES_PER_IP_PER_DAY = "10"   # nouveaux cercles par connexion et par jour
-CIRCLE_QUOTA_MB = "250"             # espace maximum par famille (surtout les photos)
+NEW_CIRCLES_PER_IP_PER_DAY = "3"    # nouvelles familles par connexion et par jour
+NEW_CIRCLES_PER_DAY = "100"         # nouvelles familles par jour, au total
+CIRCLE_QUOTA_START_MB = "20"        # espace d'une famille le jour de son arrivée…
+CIRCLE_QUOTA_PER_DAY_MB = "10"      # … qui grandit chaque jour de…
+CIRCLE_QUOTA_MB = "250"             # … jusqu'à ce maximum (surtout les photos)
 INACTIVE_DAYS = "400"               # un cercle sans aucune connexion pendant ce délai est effacé du relais
 # VAPID_PUBLIC_KEY et VAPID_PRIVATE_JWK : générés par `npm run vapid`
 # (la clé privée se règle avec `npx wrangler secret put VAPID_PRIVATE_JWK`).

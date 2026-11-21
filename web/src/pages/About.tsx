@@ -4,7 +4,7 @@ import { useInstall } from '../lib/install';
 import { RELAY_URL } from '../lib/sync';
 import { Page } from '../ui';
 
-type Limits = { quotaMb: number; inactiveDays: number; newCirclesPerDay: number };
+type Limits = { quotaMb: number; quotaStartMb: number; quotaPerDayMb: number; inactiveDays: number };
 
 /** Bouton « Installer l'appli » (ou instructions iPhone). Rien si déjà installée. */
 export function InstallCard({ compact = false }: { compact?: boolean }) {
@@ -76,7 +76,10 @@ export function AboutPage({ back = '/', onBack }: { back?: string; onBack?: () =
           <>
             <h3>Limites de ce service gratuit</h3>
             <ul>
-              <li>{limits?.quotaMb ?? 250} Mo d'espace partagé par famille (surtout les photos).</li>
+              <li>
+                Jusqu'à {limits?.quotaMb ?? 250} Mo d'espace partagé par famille, surtout pour les photos. Une nouvelle famille commence avec{' '}
+                {limits?.quotaStartMb ?? 20} Mo, puis gagne {limits?.quotaPerDayMb ?? 10} Mo par jour : cela protège le service contre les abus.
+              </li>
               <li>
                 Une famille dont aucun appareil ne se connecte pendant {months} mois est effacée du relais. Les données restent sur les
                 appareils, et sont renvoyées automatiquement si l'un d'eux se reconnecte.
