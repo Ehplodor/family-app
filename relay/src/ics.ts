@@ -40,17 +40,29 @@ export function checkIcsUrl(raw: unknown): URL {
   return url;
 }
 
+const MAX_REDIRECTS = 3;
+
 export async function fetchIcs(raw: unknown): Promise<Response> {
-  const url = checkIcsUrl(raw);
+  let url = checkIcsUrl(raw);
+  const signal = AbortSignal.timeout(TIMEOUT_MS);
   let res: Response;
-  try {
-    res = await fetch(url.toString(), {
-      headers: { Accept: 'text/calendar, text/plain;q=0.5', 'User-Agent': 'FamilyApp-Relay (calendar subscription)' },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-  } catch {
-    throw new IcsError(502, 'Calendrier injoignable');
+  // Redirections suivies à la main : chaque nouvelle adresse repasse les mêmes contrôles
+  // (sinon un site pourrait rediriger le relais vers http://, une adresse IP ou un nom local).
+  for (let hop = 0; ; hop++) {
+    try {
+      res = await fetch(url.toString(), {
+        headers: { Accept: 'text/calendar, text/plain;q=0.5', 'User-Agent': 'FamilyApp-Relay (calendar subscription)' },
+        redirect: 'manual',
+        signal,
+      });
+    } catch {
+      throw new IcsError(502, 'Calendrier injoignable');
+    }
+    const location = res.status >= 300 && res.status < 400 ? res.headers.get('Location') : null;
+    if (!location) break;
+    await res.body?.cancel();
+    if (hop >= MAX_REDIRECTS) throw new IcsError(502, 'Trop de redirections');
+    url = checkIcsUrl(new URL(location, url).toString());
   }
   if (!res.ok || !res.body) throw new IcsError(502, `Le site du calendrier a répondu ${res.status}`);
   if (Number(res.headers.get('Content-Length') ?? 0) > MAX_BYTES) throw new IcsError(413, 'Calendrier trop volumineux');

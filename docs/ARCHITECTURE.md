@@ -123,8 +123,10 @@ relais qui télécharge le fichier (route `POST /c/<cercle>/ics`, `relay/src/ics
 le contenu de ce calendrier, sans rien stocker ni journaliser. L'appli le dit avant l'abonnement et propose
 l'alternative 100 % privée : importer le fichier `.ics`. Une fois reçus, les événements sont stockés et partagés
 chiffrés comme le reste (collection `calendars`). Garde-fous : jeton du cercle obligatoire, 60 téléchargements par
-cercle et par jour, https et noms de domaine publics uniquement, 2 Mo et 10 s maximum, réponse refusée si ce
-n'est pas un calendrier (le relais ne peut pas servir de proxy vers n'importe quelle page).
+cercle et par jour, https et noms de domaine publics uniquement (y compris après chaque redirection, au plus 3),
+2 Mo et 10 s maximum, réponse refusée si ce n'est pas un calendrier (le relais ne peut pas servir de proxy vers
+n'importe quelle page). Côté appli, un calendrier est limité à environ 200 Ko (les événements les plus proches
+d'aujourd'hui sont gardés) pour ne jamais dépasser la taille d'un paquet de synchronisation.
 
 Les jours fériés (calculés) et les vacances scolaires (données embarquées dans l'appli, `web/src/lib/calendars.ts`,
 à compléter chaque année) ne demandent aucun accès réseau.
