@@ -232,6 +232,9 @@ multiplier les cercles « anciens » à partir d'un seul.
 - **Appli ouverte** (`AlarmWatcher`, idéalement en « mode chevet » avec l'écran maintenu allumé) : écran de
   sonnerie plein écran, bip en boucle généré par WebAudio, vibration, grand bouton « répéter », glisser vers le
   haut pour arrêter ou passer au défi.
+- **Mode chevet** : un site ne peut pas régler la luminosité du téléphone. L'écran reste donc noir (pixels
+  éteints sur OLED) avec une horloge très pâle qui se déplace chaque minute (anti-marquage). Un toucher ou un
+  mouvement du téléphone (`devicemotion`, Android) la rend lisible 10 s ; l'écran de sonnerie est lumineux.
 - **Appli fermée** : les sonneries des 7 prochains jours sont envoyées au relais avec les autres rappels de
   l'appareil (une notification à l'heure, puis deux relances à +3 et +6 min, même étiquette). La notification
   est insistante (`requireInteraction`, vibration) avec « Répéter » et, sans défi, « Arrêter ». L'heure de la

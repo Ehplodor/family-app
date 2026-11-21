@@ -548,16 +548,44 @@ function ChallengeView({ mode, onSolved, onBack }: { mode: AlarmMode; onSolved: 
 
 /* ------------------------------------------------------------------ Mode chevet */
 
-/** Écran allumé toute la nuit, horloge sombre : la sonnerie fonctionnera à coup sûr (appli ouverte). */
+/**
+ * Mode chevet : écran allumé toute la nuit pour que la sonnerie fonctionne à coup sûr.
+ *
+ * Un site ne peut pas régler la luminosité du téléphone : on fait donc le plus sombre possible
+ * avec les pixels. Fond noir (sur un écran OLED, les pixels noirs sont éteints), horloge très
+ * pâle qui se déplace un peu chaque minute (pas de marquage de l'écran). Un toucher ou un
+ * mouvement du téléphone la rend lisible quelques secondes ; à l'heure du réveil, l'écran de
+ * sonnerie reprend une luminosité normale.
+ */
+const AWAKE_MS = 10_000;
 function Bedside() {
   const engine = useEngine();
   const { mine } = useMyAlarms();
   const [now, setNow] = useState(Date.now());
+  const [awakeUntil, setAwakeUntil] = useState(Date.now() + AWAKE_MS);
+  const [shift, setShift] = useState({ x: 0, y: 0 });
+  const awake = now < awakeUntil;
   useWakeLock();
   useEffect(() => {
     audio(); // l'ouverture du mode chevet est un geste : on débloque le son pour plus tard
     const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
+    // Anti-marquage : petit déplacement aléatoire chaque minute.
+    const m = setInterval(() => setShift({ x: Math.round((Math.random() - 0.5) * 60), y: Math.round((Math.random() - 0.5) * 160) }), 60_000);
+    // Téléphone pris en main : réveil de l'affichage (Android ; sur iPhone, seul le toucher compte).
+    let last: number | null = null;
+    const onMotion = (e: DeviceMotionEvent) => {
+      const a = e.accelerationIncludingGravity;
+      if (!a) return;
+      const g = Math.hypot(a.x ?? 0, a.y ?? 0, a.z ?? 0);
+      if (last !== null && Math.abs(g - last) > 1.5) setAwakeUntil(Date.now() + AWAKE_MS);
+      last = g;
+    };
+    window.addEventListener('devicemotion', onMotion);
+    return () => {
+      clearInterval(t);
+      clearInterval(m);
+      window.removeEventListener('devicemotion', onMotion);
+    };
   }, []);
   const next = mine
     .filter((a) => a.deviceId === engine.deviceId)
@@ -565,10 +593,22 @@ function Bedside() {
     .filter((t): t is number => t !== null)
     .sort((a, b) => a - b)[0];
   return (
-    <div className="bedside" onClick={() => location.replace('#/m/alarms')}>
-      <span className="bedside-clock">{hhmm(now)}</span>
-      <span className="bedside-next">{next ? `⏰ ${hhmm(next)} · ${untilLabel(next, now)}` : 'Aucun réveil programmé sur cet appareil'}</span>
-      <span className="bedside-hint">Laissez l'appli ouverte et le téléphone branché. Touchez pour quitter.</span>
+    <div
+      className={`bedside ${awake ? 'awake' : ''}`}
+      onClick={() => {
+        // Premier toucher : on rallume l'affichage ; toucher à nouveau pour quitter.
+        if (awake) location.replace('#/m/alarms');
+        else setAwakeUntil(Date.now() + AWAKE_MS);
+      }}
+    >
+      <div className="bedside-inner" style={{ transform: `translate(${shift.x}px, ${shift.y}px)` }}>
+        <span className="bedside-clock">{hhmm(now)}</span>
+        <span className="bedside-next">{next ? `⏰ ${hhmm(next)} · ${untilLabel(next, now)}` : 'Aucun réveil programmé sur cet appareil'}</span>
+      </div>
+      <span className="bedside-hint">
+        Laissez l'appli ouverte et le téléphone branché. Baissez aussi la luminosité du téléphone : l'appli ne peut pas la régler.
+        Touchez encore pour quitter.
+      </span>
     </div>
   );
 }

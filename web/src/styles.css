@@ -1447,10 +1447,30 @@ input.switch {
 .bedside {
   align-items: center;
   justify-content: center;
-  gap: 18px;
   background: #000;
-  color: #8a6a4a;
+  color: #7a5a3c;
+  cursor: none;
+}
+.bedside-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  opacity: 0.12;
+  transition: opacity 1.5s, transform 4s;
+}
+.bedside.awake .bedside-inner {
+  opacity: 0.7;
 }
 .bedside-next {
   font-size: 18px;
+}
+.bedside-hint {
+  position: absolute;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  opacity: 0;
+  transition: opacity 1.5s;
+}
+.bedside.awake .bedside-hint {
+  opacity: 0.5;
 }
