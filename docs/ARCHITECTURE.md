@@ -237,6 +237,28 @@ multiplier les cercles « anciens » à partir d'un seul.
 - Le service worker du téléphone **déchiffre** le contenu avec la clé du cercle et l'affiche. Si le contenu est
   illisible (clé renouvelée entre-temps), il affiche une notification neutre, sans détail.
 
+### Réveils
+
+- Un réveil (`alarms`) appartient à un membre **et** à un appareil (`deviceId`). Il est rangé, chiffré, dans les
+  données du cercle pour pouvoir être **transféré** d'un appareil à l'autre (changer `deviceId`), mais l'appli ne
+  l'affiche qu'à son propriétaire et seul l'appareil choisi sonne. Calculs : `web/src/lib/alarms.ts` (testé).
+- **Appli ouverte** (`AlarmWatcher`, idéalement en « mode chevet » avec l'écran maintenu allumé) : écran de
+  sonnerie plein écran, bip en boucle généré par WebAudio, vibration, grand bouton « répéter », glisser vers le
+  haut pour arrêter ou passer au défi.
+- **Mode chevet** : un site ne peut pas régler la luminosité du téléphone. L'écran reste donc noir (pixels
+  éteints sur OLED) avec une horloge très pâle qui se déplace chaque minute (anti-marquage). Un toucher ou un
+  mouvement du téléphone (`devicemotion`, Android) la rend lisible 10 s ; l'écran de sonnerie est lumineux.
+  Au choix : horloge pâle, noir complet (rien d'allumé hors toucher), ou fonds animés originaux très sombres
+  (tuyaux, aquarium ; canvas à environ 12 images/s, `web/src/pages/Screensaver.tsx`).
+- **Appli fermée** : les sonneries des 7 prochains jours sont envoyées au relais avec les autres rappels de
+  l'appareil (une notification à l'heure, puis deux relances à +3 et +6 min, même étiquette). La notification
+  est insistante (`requireInteraction`, vibration) avec « Répéter » et, sans défi, « Arrêter ». L'heure de la
+  dernière sonnerie arrêtée est gardée **sur l'appareil** (IndexedDB `kv`, `alarmDone:<id>`) : le service worker
+  n'affiche pas les relances d'un réveil déjà arrêté.
+- **Limite honnête d'une PWA** : aucun navigateur ne permet à un site de jouer une sonnerie continue appli fermée,
+  ni de passer outre le mode silencieux / Ne pas déranger. Appli fermée, le réveil = le son et la vibration d'une
+  notification. Il faut aussi du réseau à l'heure du réveil, et ouvrir l'appli au moins une fois par semaine.
+
 ### Particularités des plateformes
 
 - **Android (Chrome, Edge, Firefox)** : fonctionne dans le navigateur ou une fois installée, avec les boutons

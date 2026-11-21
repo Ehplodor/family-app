@@ -10,10 +10,23 @@ import { fromB64url } from './bytes';
 import { sealJSON } from './crypto';
 import type { Device, Engine, Member } from './engine';
 import type { Op } from './replica';
+import { DEFAULT_SNOOZE, PUSH_FOLLOW_UPS, ringsBetween, type Alarm } from './alarms';
 import { computeReminders, DEFAULT_PREFS, outOfQuietHours, type NotifPrefs, type ReminderData } from './reminders';
 import { RELAY_URL, relayFetch } from './sync';
 
-export type PushPayload = { title: string; body: string; tag: string; url: string; kind: string; snooze?: boolean; answer?: string };
+export type PushPayload = {
+  title: string;
+  body: string;
+  tag: string;
+  url: string;
+  kind: string;
+  snooze?: boolean;
+  answer?: string;
+  /** Réveil : champ facultatif, ignoré par les anciennes versions (qui affichent une notification simple). */
+  alarm?: AlarmPush;
+};
+/** `at` = heure de la sonnerie d'origine : permet d'ignorer les relances une fois le réveil arrêté. */
+export type AlarmPush = { id: string; at: number; snoozeMin: number; challenge: boolean };
 type QueueItem = { device: string; at: number; payload: string; topic?: string; urgent?: boolean };
 
 export const pushSupported = () =>
@@ -33,7 +46,10 @@ async function topicOf(tag: string) {
 }
 
 /** Collections dont dépendent les rappels planifiés. */
-const SCHEDULE_SOURCES = ['events', 'birthdays', 'tasks', 'meals', 'members', 'schoolProfiles', 'timetable', 'homework', 'cards'];
+const SCHEDULE_SOURCES = ['events', 'birthdays', 'tasks', 'meals', 'members', 'schoolProfiles', 'timetable', 'homework', 'cards', 'alarms'];
+/** Les réveils sont planifiés sur 7 jours (l'appli recalcule à chaque ouverture). */
+const ALARM_HORIZON = 7 * 86400_000;
+const MAX_SCHEDULE = 300; // limite du relais par appareil
 
 export class Notifier {
   private uploaded = new Map<string, string>();
@@ -177,10 +193,16 @@ export class Notifier {
     const targets = this.devices().filter((d) => d.push && (everyone || d.id === this.engine.deviceId));
     for (const d of targets) {
       const reminders = computeReminders(data, d.memberId, prefsOf(this.engine, d.memberId));
+      const alarms = this.alarmRings(d.id);
       const key = `${this.circle.circleId}:${d.id}`;
-      const fingerprint = JSON.stringify(reminders);
+      const fingerprint = JSON.stringify([reminders, alarms]);
       if (this.uploaded.get(key) === fingerprint) continue;
       const items: QueueItem[] = [];
+      // Réveils d'abord : ils passent avant les autres rappels si la liste est pleine.
+      for (const { alarm, at } of alarms) {
+        const payload = await this.encrypt(alarmPayload(alarm, at));
+        for (const delay of PUSH_FOLLOW_UPS) items.push({ device: d.id, at: at + delay * 60_000, payload, urgent: true });
+      }
       for (const r of reminders) {
         items.push({
           device: d.id,
@@ -193,10 +215,24 @@ export class Notifier {
       await relayFetch(this.circle, `/schedule/${d.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items }),
+        body: JSON.stringify({ items: items.slice(0, MAX_SCHEDULE) }),
       });
       this.uploaded.set(key, fingerprint);
     }
+  }
+
+  /** Sonneries des 7 prochains jours des réveils rangés sur un appareil. */
+  private alarmRings(deviceId: string) {
+    const now = Date.now();
+    return this.engine.replica
+      .list<Alarm>('alarms')
+      .filter((a) => a.deviceId === deviceId)
+      .flatMap((alarm) => ringsBetween(alarm, now, now + ALARM_HORIZON).map((at) => ({ alarm, at })));
+  }
+
+  /** Répétition (snooze) demandée depuis l'appli : une notification dans quelques minutes. */
+  async snoozeAlarm(alarm: Alarm & { id: string }, at: number) {
+    await this.send([{ device: this.engine.deviceId, at, payload: await this.encrypt(alarmPayload(alarm, at)), urgent: true }]);
   }
 
   /** Prochains rappels de cet appareil (affichés dans l'écran Notifications). */
@@ -316,4 +352,16 @@ export class Notifier {
       }
     }
   }
+}
+
+export function alarmPayload(alarm: Alarm & { id: string }, at: number): PushPayload {
+  const time = new Date(at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  return {
+    title: `⏰ ${alarm.label || 'Réveil'} · ${time}`,
+    body: alarm.mode === 'simple' ? 'Touchez pour ouvrir le réveil.' : 'Touchez pour ouvrir le réveil et relever le défi.',
+    tag: `alarm-${alarm.id}`,
+    url: `#/m/alarms/ring/${alarm.id}/${at}`,
+    kind: 'alarm',
+    alarm: { id: alarm.id, at, snoozeMin: alarm.snoozeMin ?? DEFAULT_SNOOZE, challenge: alarm.mode !== 'simple' },
+  };
 }

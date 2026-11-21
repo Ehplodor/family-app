@@ -1,5 +1,6 @@
 import type { ComponentType } from 'react';
 import {
+  AlarmClock,
   Cake,
   CalendarDays,
   Camera,
@@ -26,6 +27,7 @@ import { RecipesPage, RecipesSummary } from './pages/Recipes';
 import { TasksPage, TasksSummary } from './pages/Tasks';
 import { BudgetPage, BudgetSummary } from './pages/Budget';
 import { SchoolPage, SchoolSummary } from './pages/school/School';
+import { AlarmsPage, AlarmsSummary } from './pages/Alarms';
 
 export type ModuleDef = {
   id: string;
@@ -55,6 +57,7 @@ export const MODULES: ModuleDef[] = [
   { id: 'meals', title: 'Repas', icon: UtensilsCrossed, color: '#4F6BED', section: 'Organisation', Page: MealsPage, Summary: MealsSummary },
   { id: 'recipes', title: 'Recettes', icon: CookingPot, color: '#F2994A', section: 'Organisation', Page: RecipesPage, Summary: RecipesSummary },
   { id: 'tasks', title: 'Tâches', icon: Repeat, color: '#D6409F', section: 'Organisation', Page: TasksPage, Summary: TasksSummary },
+  { id: 'alarms', title: 'Réveils', icon: AlarmClock, color: '#F76B15', section: 'Organisation', Page: AlarmsPage, Summary: AlarmsSummary },
   { id: 'budget', title: 'Budget', icon: PiggyBank, color: '#30A46C', section: 'Organisation', Page: BudgetPage, Summary: BudgetSummary },
 ];
 
