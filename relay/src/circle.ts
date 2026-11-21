@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './index';
 import { sendPush, type PushSubscriptionJSON } from './webpush';
+import { fetchIcs, ICS_PER_DAY, IcsError } from './ics';
 
 /**
  * Un cercle familial = un Durable Object.
@@ -307,6 +308,21 @@ export class Circle extends DurableObject<Env> {
     }
 
     await this.auth(request);
+
+    // Abonnement à un calendrier en ligne (voir ics.ts) : quota par cercle et par jour.
+    if (action === 'ics' && m === 'POST') {
+      this.notClosed();
+      if (!(await this.allow(`ics|${this.meta('id') ?? ''}`, ICS_PER_DAY))) {
+        throw new HttpError(429, "Trop de mises à jour de calendriers aujourd'hui. Réessayez demain.");
+      }
+      const body = (await request.json().catch(() => ({}))) as { url?: unknown };
+      try {
+        return await fetchIcs(body.url);
+      } catch (err) {
+        if (err instanceof IcsError) throw new HttpError(err.status, err.message);
+        throw err;
+      }
+    }
 
     if (action === 'blobs' && arg && BLOB_RE.test(arg)) {
       if (m === 'GET') {

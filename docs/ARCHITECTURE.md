@@ -116,6 +116,19 @@ nouvel appareil déclenche une **alerte de sécurité** chez tous les membres.
 | L'**heure** d'envoi des rappels planifiés | La clé du cercle, et le jeton d'accès en clair (seulement son empreinte) |
 | L'adresse des services push (Google, Apple, Mozilla) | Qui a écrit quoi |
 
+**Seule exception, choisie par l'utilisateur : les abonnements à un calendrier en ligne (.ics).** Les sites de
+calendriers (Google, Outlook, clubs…) n'autorisent pas un navigateur à lire leurs fichiers depuis un autre site
+(CORS), et la CSP de l'appli n'autorise que le relais. Quand une famille s'abonne à une adresse, c'est donc le
+relais qui télécharge le fichier (route `POST /c/<cercle>/ics`, `relay/src/ics.ts`) : il voit alors l'adresse et
+le contenu de ce calendrier, sans rien stocker ni journaliser. L'appli le dit avant l'abonnement et propose
+l'alternative 100 % privée : importer le fichier `.ics`. Une fois reçus, les événements sont stockés et partagés
+chiffrés comme le reste (collection `calendars`). Garde-fous : jeton du cercle obligatoire, 60 téléchargements par
+cercle et par jour, https et noms de domaine publics uniquement, 2 Mo et 10 s maximum, réponse refusée si ce
+n'est pas un calendrier (le relais ne peut pas servir de proxy vers n'importe quelle page).
+
+Les jours fériés (calculés) et les vacances scolaires (données embarquées dans l'appli, `web/src/lib/calendars.ts`,
+à compléter chaque année) ne demandent aucun accès réseau.
+
 Les services push des navigateurs (FCM, APNs, Mozilla) ne voient eux aussi que du chiffré : les notifications
 sont chiffrées une première fois pour le navigateur (RFC 8291), et leur contenu est déjà chiffré une seconde fois
 avec la clé du cercle.

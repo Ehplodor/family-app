@@ -1,12 +1,16 @@
 import { useMemo, useState } from 'react';
-import { Cake, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Cake, ChevronLeft, ChevronRight, Layers, Search, X } from 'lucide-react';
 import { useCollection, useMembers } from '../store';
 import { addMonths, capitalize, fmt, parseISODate, startOfWeek, addDays, toISODate, today } from '../dates';
 import { Avatar, Empty, Fab, Field, FieldGroup, MemberChips, Page, Sheet, confirmDelete } from '../ui';
 import type { Doc, Member } from '../store';
 import type { Birthday } from './Birthdays';
-import { occursOn, type Repeat } from '../lib/recurrence';
+import { occursOn, spanEnd, spanPart, timeLabel, type Repeat } from '../lib/recurrence';
 import { KIND_EMOJI, KIND_LABEL, type Homework } from '../lib/school';
+import { holidayOn, icsEventsOn, icsTime, schoolHolidayOn, type ImportedCalendar } from '../lib/calendars';
+import { CalendarsSheet, HOLIDAY_COLOR, isShown, useCalendarPrefs, useRefreshSubscriptions, VACATION_COLOR } from './Calendars';
+import { visibleFor } from '../lib/calendarSearch';
+import { CalendarSearch } from './CalendarSearch';
 
 export type { Repeat };
 export type CalEvent = {
@@ -31,6 +35,8 @@ export type Occurrence = {
   members: Member[];
   event?: Doc<CalEvent>;
   birthday?: boolean;
+  /** Précision pour les événements sur plusieurs jours (« jusqu'au … »). */
+  note?: string;
 };
 
 export { occursOn };
@@ -40,6 +46,8 @@ export function useDayAgenda() {
   const { docs: events } = useCollection<CalEvent>('events');
   const { docs: birthdays } = useCollection<Birthday>('birthdays');
   const { docs: homework } = useCollection<Homework>('homework');
+  const { docs: imported } = useCollection<ImportedCalendar>('calendars');
+  const prefs = useCalendarPrefs();
   const { byId } = useMembers();
   return useMemo(
     () =>
@@ -56,16 +64,21 @@ export function useDayAgenda() {
           }));
         const evs: Occurrence[] = events
           .filter((e) => occursOn(e, iso))
-          .sort((a, b) => (a.allDay === b.allDay ? (a.start ?? '').localeCompare(b.start ?? '') : a.allDay ? -1 : 1))
-          .map((e) => {
+          .map((e) => ({ e, time: timeLabel(e, iso), part: spanPart(e, iso) }))
+          // Journées entières (et jours pleins d'un séjour) d'abord, puis par heure.
+          .sort((a, b) => (!a.time === !b.time ? (a.time ?? '').localeCompare(b.time ?? '') : !a.time ? -1 : 1))
+          .map(({ e, time, part }) => {
             const members = e.memberIds.map((id) => byId(id)).filter((m): m is Member => !!m);
+            const end = spanEnd(e);
+            const short = (x: string) => fmt(x, { weekday: 'short', day: 'numeric', month: 'short' });
             return {
               key: e.id,
               title: e.title,
-              time: e.allDay ? undefined : [e.start, e.end].filter(Boolean).join(' – '),
+              time,
               color: members[0]?.color ?? 'var(--accent)',
               members,
               event: e,
+              note: !end ? undefined : part === 'last' ? `depuis ${short(e.date)}` : `jusqu'au ${short(end)}`,
             };
           });
         const school: Occurrence[] = homework
@@ -80,9 +93,28 @@ export function useDayAgenda() {
               members: child ? [child] : [],
             };
           });
-        return [...bdays, ...school, ...evs];
+        // Calendriers supplémentaires (fériés, vacances, imports) : discrets, en tête de journée.
+        const extra: Occurrence[] = [];
+        const holiday = isShown(prefs, 'holidays') ? holidayOn(iso) : undefined;
+        if (holiday) extra.push({ key: `fr-${iso}`, title: `🇫🇷 ${holiday}`, time: 'Férié', color: HOLIDAY_COLOR, members: [] });
+        const vacation = isShown(prefs, 'vacances') && prefs.zone ? schoolHolidayOn(iso, prefs.zone) : undefined;
+        if (vacation) {
+          extra.push({ key: `vac-${iso}`, title: `🏖️ ${vacation} (zone ${prefs.zone})`, color: VACATION_COLOR, members: [] });
+        }
+        for (const cal of imported) {
+          if (!isShown(prefs, cal.id)) continue;
+          icsEventsOn(cal.events ?? [], iso).forEach((ev, i) =>
+            extra.push({ key: `ics-${cal.id}-${i}`, title: ev.t, time: icsTime(ev, iso), color: cal.color, members: [] }),
+          );
+        }
+        return [
+          ...extra,
+          ...(isShown(prefs, 'birthdays') ? bdays : []),
+          ...(isShown(prefs, 'school') ? school : []),
+          ...(isShown(prefs, 'main') ? evs : []),
+        ];
       },
-    [events, birthdays, homework, byId],
+    [events, birthdays, homework, imported, prefs, byId],
   );
 }
 
@@ -99,7 +131,10 @@ export function AgendaList({ items, onOpen }: { items: Occurrence[]; onOpen?: (e
         <li key={o.key} onClick={() => o.event && onOpen?.(o.event)} className={o.event && onOpen ? 'clickable' : ''}>
           <span className="agenda-time">{o.birthday ? <Cake size={18} /> : o.time || 'Journée'}</span>
           <span className="agenda-bar" style={{ background: o.color }} />
-          <span className="grow">{o.title}</span>
+          <span className="grow">
+            {o.title}
+            {o.note && <small className="agenda-note">{o.note}</small>}
+          </span>
           <span className="avatars">
             {o.members.map((m) => (
               <Avatar key={m.id} member={m} size={24} />
@@ -111,20 +146,51 @@ export function AgendaList({ items, onOpen }: { items: Occurrence[]; onOpen?: (e
   );
 }
 
+const MAX_LANES = 2;
 const WEEKDAYS = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
 
 export function CalendarPage() {
   const events = useCollection<CalEvent>('events');
-  const agenda = useDayAgenda();
+  const fullAgenda = useDayAgenda();
+  const { members } = useMembers();
+  // Filtre par personne (vide = tout le monde) et recherche : propres à cet écran, non partagés.
+  const [filter, setFilter] = useState<string[]>([]);
+  const [searching, setSearching] = useState(false);
+  const agenda = useMemo(
+    () => (iso: string) => fullAgenda(iso).filter((o) => visibleFor(o.members.map((m) => m.id), filter)),
+    [fullAgenda, filter],
+  );
   const [selected, setSelected] = useState(today());
   const [month, setMonth] = useState(() => parseISODate(today()));
   const [editing, setEditing] = useState<Doc<CalEvent> | 'new' | null>(null);
+  const [choosing, setChoosing] = useState(false);
+  useRefreshSubscriptions();
 
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
   const gridStart = startOfWeek(first);
   const days = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
   // On retire la dernière ligne si elle est entièrement dans le mois suivant.
   const visible = days[35].getMonth() !== month.getMonth() ? days.slice(0, 35) : days;
+
+  // Événements sur plusieurs jours : un trait fin et continu sous les dates, sur une « voie » stable.
+  const lanes = useMemo(() => {
+    const from = toISODate(visible[0]);
+    const to = toISODate(visible[visible.length - 1]);
+    const spans = events.docs
+      .map((e) => ({ e, end: spanEnd(e) }))
+      .filter((x): x is { e: Doc<CalEvent>; end: string } => !!x.end && x.e.date <= to && x.end >= from)
+      .sort((a, b) => a.e.date.localeCompare(b.e.date) || b.end.localeCompare(a.end));
+    const laneEnds: string[] = [];
+    const out: { e: Doc<CalEvent>; end: string; lane: number }[] = [];
+    for (const x of spans) {
+      let lane = laneEnds.findIndex((end) => end < x.e.date);
+      if (lane < 0) lane = laneEnds.length;
+      laneEnds[lane] = x.end;
+      out.push({ ...x, lane });
+    }
+    return out;
+  }, [events.docs, visible[0].getTime(), visible.length]);
+  const { byId } = useMembers();
 
   const goToday = () => {
     setSelected(today());
@@ -135,11 +201,38 @@ export function CalendarPage() {
     <Page
       title="Calendrier"
       actions={
-        <button className="btn small" onClick={goToday}>
-          Aujourd'hui
-        </button>
+        <>
+          <button className="icon-btn compact" onClick={() => setChoosing(true)} aria-label="Calendriers affichés">
+            <Layers size={22} />
+          </button>
+          <button
+            className="icon-btn compact"
+            onClick={() => setSearching((s) => !s)}
+            aria-label={searching ? 'Fermer la recherche' : 'Rechercher'}
+          >
+            {searching ? <X /> : <Search />}
+          </button>
+          <button className="btn small" onClick={goToday}>
+            Aujourd'hui
+          </button>
+        </>
       }
     >
+      {members.length > 1 && (
+        <div className="cal-filter">
+          <MemberChips members={members} value={filter} onChange={setFilter} />
+        </div>
+      )}
+      {searching && (
+        <CalendarSearch
+          filter={filter}
+          onPick={(iso) => {
+            setSelected(iso);
+            setMonth(parseISODate(iso));
+            setSearching(false);
+          }}
+        />
+      )}
       <div className="card calendar">
         <div className="cal-head">
           <button className="icon-btn" onClick={() => setMonth(addMonths(first, -1))} aria-label="Mois précédent">
@@ -159,6 +252,10 @@ export function CalendarPage() {
           {visible.map((d) => {
             const iso = toISODate(d);
             const items = agenda(iso);
+            const bars = lanes.filter((x) => x.lane < MAX_LANES && x.e.date <= iso && iso <= x.end);
+            const shown = new Set(bars.map((x) => x.e.id));
+            const dots = items.filter((o) => !o.event || !shown.has(o.event.id));
+            const weekday = (d.getDay() + 6) % 7;
             const cls = [
               'cal-day',
               d.getMonth() !== month.getMonth() && 'other',
@@ -171,9 +268,18 @@ export function CalendarPage() {
               <button key={iso} className={cls} onClick={() => setSelected(iso)}>
                 <span>{d.getDate()}</span>
                 <span className="dots">
-                  {items.slice(0, 3).map((o) => (
+                  {dots.slice(0, 3).map((o) => (
                     <i key={o.key} style={{ background: o.color }} />
                   ))}
+                </span>
+                <span className="spans">
+                  {Array.from({ length: MAX_LANES }, (_, lane) => {
+                    const x = bars.find((b) => b.lane === lane);
+                    if (!x) return <i key={lane} />;
+                    const color = byId(x.e.memberIds[0])?.color ?? 'var(--accent)';
+                    const cls = [iso === x.e.date || weekday === 0 ? 'start' : '', iso === x.end || weekday === 6 ? 'end' : ''].join(' ');
+                    return <i key={lane} className={`on ${cls}`} style={{ background: color }} title={x.e.title} />;
+                  })}
                 </span>
               </button>
             );
@@ -189,6 +295,9 @@ export function CalendarPage() {
       )}
 
       <Fab onClick={() => setEditing('new')} label="Nouvel événement" />
+      <Sheet open={choosing} title="Calendriers" onClose={() => setChoosing(false)}>
+        {choosing && <CalendarsSheet />}
+      </Sheet>
       <Sheet open={!!editing} title={editing === 'new' ? 'Nouvel événement' : "Modifier l'événement"} onClose={() => setEditing(null)}>
         {editing && (
           <EventForm
@@ -250,9 +359,16 @@ function EventForm({
         <input autoFocus value={ev.title} onChange={(e) => set({ title: e.target.value })} placeholder="Piscine, dentiste, dîner chez mamie…" />
       </Field>
       <div className="row">
-        <Field label="Date">
+        <Field label={(ev.repeat ?? 'none') === 'none' ? 'Du' : 'Date'}>
           <input type="date" required value={ev.date} onChange={(e) => set({ date: e.target.value })} />
         </Field>
+        {(ev.repeat ?? 'none') === 'none' && (
+          <Field label="Au (si plusieurs jours)">
+            <input type="date" min={ev.date} value={ev.endDate ?? ''} onChange={(e) => set({ endDate: e.target.value })} />
+          </Field>
+        )}
+      </div>
+      <div className="row">
         <Field label="Répéter">
           <select value={ev.repeat ?? 'none'} onChange={(e) => set({ repeat: e.target.value as Repeat })}>
             <option value="none">Jamais</option>
@@ -271,15 +387,10 @@ function EventForm({
           <Field label="Début">
             <input type="time" value={ev.start ?? ''} onChange={(e) => set({ start: e.target.value })} />
           </Field>
-          <Field label="Fin">
+          <Field label={ev.endDate && ev.endDate > ev.date && (ev.repeat ?? 'none') === 'none' ? 'Fin (dernier jour)' : 'Fin'}>
             <input type="time" value={ev.end ?? ''} onChange={(e) => set({ end: e.target.value })} />
           </Field>
         </div>
-      )}
-      {(ev.repeat ?? 'none') === 'none' && (
-        <Field label="Jusqu'au (optionnel, plusieurs jours)">
-          <input type="date" min={ev.date} value={ev.endDate ?? ''} onChange={(e) => set({ endDate: e.target.value })} />
-        </Field>
       )}
       <FieldGroup label="Qui ?">
         <MemberChips members={members} value={ev.memberIds} onChange={(memberIds) => set({ memberIds })} />
