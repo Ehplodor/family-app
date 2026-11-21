@@ -227,3 +227,82 @@ test('relais public : un cercle abandonné est effacé', async () => {
   await new Promise((r) => setTimeout(r, 19_000)); // INACTIVE_DAYS = 0.0002 jour ≈ 17 s en test
   assert.equal((await call('GET', `/c/${circle}/blobs/${blob}`, tok)).status, 403);
 });
+
+test('notifications : seuls les vrais services push sont acceptés', async () => {
+  const circle = hex();
+  const tok = token();
+  await call('POST', `/c/${circle}/register`, null, { token: tok });
+  const keys = { p256dh: 'BAAA', auth: 'AAAA' };
+  const put = (endpoint) => call('PUT', `/c/${circle}/subs/${hex()}`, tok, { endpoint, keys });
+  assert.equal((await put('https://fcm.googleapis.com/fcm/send/abc')).status, 200);
+  assert.equal((await put('https://updates.push.services.mozilla.com/wpush/v2/abc')).status, 200);
+  assert.equal((await put('https://web.push.apple.com/abc')).status, 200);
+  assert.equal((await put('https://wns2-par02p.notify.windows.com/w/?token=abc')).status, 200);
+  assert.equal((await put('https://exemple.com/push')).status, 400);
+  assert.equal((await put('https://googleapis.com.exemple.com/push')).status, 400);
+  assert.equal((await put('https://fcm.googleapis.com:8443/push')).status, 400);
+});
+
+test('rappels : le nombre de rappels en attente est plafonné', async () => {
+  const circle = hex();
+  const tok = token();
+  await call('POST', `/c/${circle}/register`, null, { token: tok });
+  const items = Array.from({ length: 300 }, (_, i) => ({ at: Date.now() + 86_400_000 + i, payload: 'x' }));
+  const statuses = [];
+  for (let i = 0; i < 21; i++) statuses.push((await call('PUT', `/c/${circle}/schedule/${hex()}`, tok, { items })).status);
+  assert.deepEqual(statuses, [...Array(20).fill(200), 507]);
+});
+
+test('renouvellement de clé : ancienneté transmise une seule fois, ancien cercle fermé', async () => {
+  const ip = randomIp();
+  const old = { id: hex(), tok: token() };
+  assert.equal((await call('POST', `/c/${old.id}/register`, null, { token: old.tok }, ip)).status, 200);
+  const from = { from: old.id, fromToken: old.tok };
+  // Successeur légitime : accepté, et l'ancien cercle passe en lecture seule
+  const next = { id: hex(), tok: token() };
+  assert.equal((await call('POST', `/c/${next.id}/register`, null, { token: next.tok, ...from }, ip)).status, 200);
+  assert.equal((await call('POST', `/c/${old.id}/register`, null, { token: old.tok }, ip)).body.closed, true);
+  // Le même successeur peut réessayer (coupure réseau) ; un autre compte comme une création
+  assert.equal((await call('POST', `/c/${next.id}/register`, null, { token: next.tok, ...from }, ip)).status, 200);
+  const statuses = [];
+  for (let i = 0; i < 3; i++) statuses.push((await call('POST', `/c/${hex()}/register`, null, { token: token(), ...from }, ip)).status);
+  assert.deepEqual(statuses, [200, 200, 429]); // 1 création déjà faite + 2 = limite de 3 par connexion
+});
+
+test('cercle fermé : son effacement laisse une « pierre tombale »', async () => {
+  const circle = hex();
+  const tok = token();
+  await call('POST', `/c/${circle}/register`, null, { token: tok });
+  const ws = socket(circle);
+  await ws.open;
+  ws.send({ t: 'hello', token: tok, since: 0 });
+  await ws.next((m) => m.t === 'ready');
+  ws.send({ t: 'push', id: 'r', data: 'ROTATION' });
+  await ws.next((m) => m.t === 'ack');
+  ws.ws.close();
+  await call('POST', `/c/${circle}/close`, tok);
+  // Quelqu'un qui garde l'ancien jeton efface le cercle…
+  assert.equal((await call('DELETE', `/c/${circle}`, tok)).status, 200);
+  // … le contenu a disparu, mais le cercle reste fermé : impossible de le recréer avec un autre jeton
+  const reg = await call('POST', `/c/${circle}/register`, null, { token: tok });
+  assert.deepEqual([reg.status, reg.body.closed], [200, true]);
+  assert.equal((await call('POST', `/c/${circle}/register`, null, { token: token() })).status, 403);
+  const again = socket(circle);
+  await again.open;
+  again.send({ t: 'hello', token: tok, since: 0 });
+  const ready = await again.next();
+  assert.deepEqual([ready.t, ready.seq, ready.closed], ['ready', 0, true]);
+  again.send({ t: 'push', id: 'p', data: 'DONNEES' });
+  assert.equal((await again.next((m) => m.t === 'error')).error, 'closed');
+  again.ws.close();
+});
+
+test('relais public : une connexion IPv6 compte pour tout son préfixe /64', async () => {
+  const prefix = `2001:db8:${crypto.randomInt(1, 0xffff).toString(16)}:${crypto.randomInt(1, 0xffff).toString(16)}`;
+  const statuses = [];
+  for (let i = 1; i <= 4; i++) {
+    statuses.push((await call('POST', `/c/${hex()}/register`, null, { token: token() }, `${prefix}:0:0:0:${i.toString(16)}`)).status);
+  }
+  assert.deepEqual(statuses, [200, 200, 200, 429]);
+  assert.equal((await call('POST', `/c/${hex()}/register`, null, { token: token() }, `${prefix}::99`)).status, 429);
+});

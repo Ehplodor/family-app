@@ -11,10 +11,12 @@ import { sendPush, type PushSubscriptionJSON } from './webpush';
 const MAX_BATCH = 512 * 1024; // un paquet de modifications chiffré
 const MAX_SNAPSHOT = 1900 * 1024;
 const MAX_BLOB = 1900 * 1024; // une photo chiffrée (réduite par l'appli avant envoi)
+const DAY = 86_400_000;
 const MAX_SCHEDULE = 300; // rappels planifiés par appareil
 const MAX_PAYLOAD = 3000; // contenu chiffré d'une notification
 const CLOSED_RETENTION = 30 * 24 * 3600 * 1000; // après rotation de clé
-const DAY = 86_400_000;
+const MAX_QUEUE = MAX_SCHEDULE * 20; // rappels en attente pour tout le cercle (≈ 20 appareils)
+const MAX_AHEAD = 40 * DAY; // l'appli planifie 14 jours à l'avance : au-delà, ce n'est pas un rappel
 const DEVICE_RE = /^[0-9a-f]{32}$/;
 const BLOB_RE = /^[0-9a-f]{32}$/;
 
@@ -28,6 +30,41 @@ class HttpError extends Error {
   ) {
     super(message);
   }
+}
+
+/**
+ * Services push des navigateurs (Chrome/Android/Samsung/Opera : Google ; Firefox : Mozilla ;
+ * Safari/iPhone : Apple ; Edge sur Windows : Microsoft). Le relais refuse d'envoyer des requêtes
+ * ailleurs : il ne doit pas servir de « relais d'envoi » vers n'importe quel site.
+ */
+const PUSH_HOSTS = ['googleapis.com', 'push.services.mozilla.com', 'push.apple.com', 'notify.windows.com'];
+export function pushEndpointAllowed(endpoint: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  // http://localhost n'est accepté que pour les tests locaux (sans effet en production).
+  if (url.protocol === 'http:') return url.hostname === '127.0.0.1' || url.hostname === 'localhost';
+  if (url.protocol !== 'https:' || url.port) return false;
+  return PUSH_HOSTS.some((h) => url.hostname === h || url.hostname.endsWith(`.${h}`));
+}
+
+/**
+ * Empreinte de connexion pour les limites : une adresse IPv6 est ramenée à son préfixe /64
+ * (un abonné dispose en général d'un /64 entier, il pourrait sinon changer d'adresse à volonté).
+ */
+export function connectionKey(ip: string): string {
+  if (!ip.includes(':')) return ip;
+  const [head, tail = ''] = ip.toLowerCase().split('::');
+  const h = head ? head.split(':') : [];
+  const t = tail ? tail.split(':') : [];
+  const groups = ip.includes('::') ? [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t] : h;
+  return `${groups
+    .slice(0, 4)
+    .map((g) => g.replace(/^0+(?=.)/, ''))
+    .join(':')}::/64`;
 }
 
 async function sha256Hex(s: string) {
@@ -144,7 +181,9 @@ export class Circle extends DurableObject<Env> {
 
   private async inheritedCreation(from?: string, fromToken?: string): Promise<number | null> {
     if (typeof from !== 'string' || !/^[0-9a-f]{32}$/.test(from) || typeof fromToken !== 'string') return null;
-    const res = await this.env.CIRCLE.get(this.env.CIRCLE.idFromName(from)).fetch(`https://relais/c/${from}/age`, {
+    const me = this.meta('id');
+    if (!me) return null;
+    const res = await this.env.CIRCLE.get(this.env.CIRCLE.idFromName(from)).fetch(`https://relais/c/${from}/age?for=${me}`, {
       headers: { Authorization: `Bearer ${fromToken}` },
     });
     if (!res.ok) return null;
@@ -160,6 +199,25 @@ export class Circle extends DurableObject<Env> {
     await this.rescheduleAlarm();
   }
 
+  /** Passe le cercle en lecture seule (après un renouvellement de clé). */
+  private async closeCircle() {
+    if (!this.meta('closed')) this.setMeta('closed', String(Date.now()));
+    this.sql.exec('DELETE FROM queue');
+    this.sql.exec('DELETE FROM subs');
+    this.sql.exec('DELETE FROM blobs');
+    await this.rescheduleAlarm();
+  }
+
+  /**
+   * Efface le contenu d'un cercle fermé mais garde une « pierre tombale » (empreinte du jeton, date de
+   * fermeture) : un appareil resté hors ligne apprend que le cercle est fermé, au lieu de le recréer et
+   * d'y renvoyer ses données, lisibles par l'appareil qui avait été retiré.
+   */
+  private purgeClosed() {
+    for (const table of ['log', 'snapshot', 'blobs', 'subs', 'queue']) this.sql.exec(`DELETE FROM ${table}`);
+    this.setMeta('purged', '1');
+  }
+
   private notClosed() {
     if (this.meta('closed')) throw new HttpError(410, 'Ce cercle a été fermé (clé renouvelée)');
   }
@@ -168,7 +226,8 @@ export class Circle extends DurableObject<Env> {
     const next = this.sql.exec<{ at: number | null }>('SELECT MIN(at) AS at FROM queue').one().at;
     const closedAt = Number(this.meta('closed') ?? 0);
     const seen = Number(this.meta('seen') ?? 0);
-    const candidates = [next, closedAt ? closedAt + CLOSED_RETENTION : null, seen ? seen + this.inactiveMs : null].filter(
+    const purged = !!this.meta('purged');
+    const candidates = [next, closedAt && !purged ? closedAt + CLOSED_RETENTION : null, seen ? seen + this.inactiveMs : null].filter(
       (x): x is number => !!x,
     );
     if (candidates.length) await this.ctx.storage.setAlarm(Math.max(Date.now(), Math.min(...candidates)));
@@ -191,6 +250,9 @@ export class Circle extends DurableObject<Env> {
     const url = new URL(request.url);
     const [, , action, arg] = url.pathname.split('/').filter(Boolean);
     const m = request.method;
+    // Identifiant du cercle (sert à désigner le successeur lors d'un renouvellement de clé).
+    const ownId = url.pathname.split('/').filter(Boolean)[1];
+    if (ownId && !this.meta('id') && /^[0-9a-f]{32}$/.test(ownId)) this.setMeta('id', ownId);
 
     if (action === 'ws' && request.headers.get('Upgrade') === 'websocket') {
       const pair = new WebSocketPair();
@@ -207,12 +269,16 @@ export class Circle extends DurableObject<Env> {
       const stored = this.meta('auth');
       if (!stored) {
         // Renouvellement de clé : c'est la même famille, qui garde son ancienneté (preuve : le jeton de l'ancien cercle).
-        const inherited = await this.inheritedCreation(body.from, body.fromToken);
+        const ip = connectionKey(request.headers.get('CF-Connecting-IP') ?? 'inconnue');
+        const perIp = Number(this.env.NEW_CIRCLES_PER_IP_PER_DAY || 3);
+        // Le renouvellement de clé est lui aussi limité par connexion : au-delà, il compte comme une création.
+        // (Limite vérifiée AVANT de réclamer l'ancienneté, car cette réclamation ferme l'ancien cercle.)
+        let inherited: number | null = null;
+        if (body.from && (await this.allow(`rotation|${ip}`, perIp))) inherited = await this.inheritedCreation(body.from, body.fromToken);
         if (inherited === null) {
           // Vraie création : limitée par connexion et au total, par jour (anti-abus d'un relais public).
-          const ip = request.headers.get('CF-Connecting-IP') ?? 'inconnue';
           const bucket = this.env.ALLOW_TEST_BUCKETS === '1' ? (request.headers.get('X-Test-Bucket') ?? '') : '';
-          if (!(await this.allow(`ip|${ip}`, Number(this.env.NEW_CIRCLES_PER_IP_PER_DAY || 3)))) {
+          if (!(await this.allow(`ip|${ip}`, perIp))) {
             throw new HttpError(429, "Trop de nouvelles familles créées depuis cette connexion aujourd'hui. Réessayez demain.");
           }
           if (!(await this.allow(`global|${bucket}`, Number(this.env.NEW_CIRCLES_PER_DAY || 100)))) {
@@ -227,8 +293,16 @@ export class Circle extends DurableObject<Env> {
     }
 
     // Appel interne entre cercles (renouvellement de clé) : date de création, sur preuve du jeton.
+    // Un cercle ne transmet son ancienneté qu'à UN successeur, et il est alors fermé (comme le fait
+    // l'appli juste après) : impossible d'enchaîner les créations gratuites à partir d'un seul cercle.
     if (action === 'age' && m === 'GET') {
       await this.auth(request);
+      const successor = url.searchParams.get('for') ?? '';
+      if (!/^[0-9a-f]{32}$/.test(successor)) throw new HttpError(400, 'Successeur invalide');
+      const claimed = this.meta('successor');
+      if (claimed && claimed !== successor) throw new HttpError(409, 'Ancienneté déjà transmise');
+      if (!claimed) this.setMeta('successor', successor);
+      await this.closeCircle();
       return Response.json({ created: Number(this.meta('created') ?? 0) });
     }
 
@@ -258,9 +332,7 @@ export class Circle extends DurableObject<Env> {
       if (m === 'PUT') {
         this.notClosed();
         const sub = (await request.json()) as PushSubscriptionJSON;
-        // http://localhost n'est accepté que pour les tests locaux (sans effet en production).
-        const okEndpoint = /^https:\/\//.test(sub?.endpoint ?? '') || /^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(sub?.endpoint ?? '');
-        if (!okEndpoint || !sub.keys?.p256dh || !sub.keys?.auth) {
+        if (typeof sub?.endpoint !== 'string' || !pushEndpointAllowed(sub.endpoint) || !sub.keys?.p256dh || !sub.keys?.auth) {
           throw new HttpError(400, 'Abonnement invalide');
         }
         const clean = { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } };
@@ -280,6 +352,7 @@ export class Circle extends DurableObject<Env> {
       const { items } = (await request.json()) as { items: QueueItem[] };
       if (!Array.isArray(items) || items.length > MAX_SCHEDULE) throw new HttpError(400, 'Liste de rappels invalide');
       this.sql.exec("DELETE FROM queue WHERE device = ? AND source = 'schedule'", arg);
+      this.checkQueueRoom(items.length);
       for (const it of items) this.insertQueue({ ...it, device: arg }, 'schedule');
       await this.rescheduleAlarm();
       return Response.json({ ok: true, count: items.length });
@@ -290,6 +363,7 @@ export class Circle extends DurableObject<Env> {
       this.notClosed();
       const { items } = (await request.json()) as { items: QueueItem[] };
       if (!Array.isArray(items) || items.length > 50) throw new HttpError(400, 'Notifications invalides');
+      this.checkQueueRoom(items.length);
       for (const it of items) {
         if (!DEVICE_RE.test(it.device)) throw new HttpError(400, 'Appareil invalide');
         this.insertQueue({ ...it, at: it.at ?? Date.now() }, 'notify');
@@ -301,17 +375,20 @@ export class Circle extends DurableObject<Env> {
 
     // Rotation de clé : le cercle passe en lecture seule puis est effacé au bout de 30 jours.
     if (action === 'close' && m === 'POST') {
-      if (!this.meta('closed')) this.setMeta('closed', String(Date.now()));
-      this.sql.exec('DELETE FROM queue');
-      this.sql.exec('DELETE FROM subs');
-      this.sql.exec('DELETE FROM blobs');
-      await this.rescheduleAlarm();
+      await this.closeCircle();
       return Response.json({ ok: true });
     }
 
     // Droit à l'effacement : supprime TOUT ce que le relais détient pour ce cercle.
     if (!action && m === 'DELETE') {
       for (const ws of this.ctx.getWebSockets()) ws.close(4001, 'Cercle supprimé');
+      if (this.meta('closed')) {
+        // Cercle fermé : on efface tout le contenu, mais la pierre tombale reste (voir purgeClosed).
+        // Sinon, quiconque garde l'ancien jeton (appareil retiré) pourrait faire « rouvrir » le cercle.
+        this.purgeClosed();
+        await this.rescheduleAlarm();
+        return Response.json({ ok: true });
+      }
       await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.deleteAll();
       this.migrate();
@@ -321,9 +398,16 @@ export class Circle extends DurableObject<Env> {
     throw new HttpError(404, 'Introuvable');
   }
 
+  /** Nombre de rappels en attente limité : ils comptent dans l'espace du cercle, mais sans plafond on pourrait s'en servir de stockage. */
+  private checkQueueRoom(extra: number) {
+    const n = this.sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM queue').one().n;
+    if (n + extra > MAX_QUEUE) throw new HttpError(507, 'Trop de rappels en attente');
+  }
+
   private insertQueue(it: QueueItem, source: string) {
     if (typeof it.payload !== 'string' || it.payload.length > MAX_PAYLOAD) throw new HttpError(400, 'Notification trop volumineuse');
     if (typeof it.at !== 'number' || !Number.isFinite(it.at)) throw new HttpError(400, 'Date invalide');
+    if (it.at > Date.now() + MAX_AHEAD) return; // trop lointain : ignoré (sans faire échouer le reste de la liste)
     const topic = typeof it.topic === 'string' ? it.topic.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32) : null;
     this.sql.exec(
       'INSERT INTO queue (device, at, payload, topic, urgent, source) VALUES (?, ?, ?, ?, ?, ?)',
@@ -347,7 +431,7 @@ export class Circle extends DurableObject<Env> {
     };
     const rows = this.sql
       .exec<{ id: number; device: string; payload: string; topic: string | null; urgent: number; tries: number }>(
-        'SELECT id, device, payload, topic, urgent, tries FROM queue WHERE at <= ? ORDER BY at LIMIT 100',
+        'SELECT id, device, payload, topic, urgent, tries FROM queue WHERE at <= ? ORDER BY at LIMIT 40',
         Date.now() + 1000,
       )
       .toArray();
@@ -382,8 +466,14 @@ export class Circle extends DurableObject<Env> {
   async alarm() {
     const closedAt = Number(this.meta('closed') ?? 0);
     const seen = Number(this.meta('seen') ?? 0);
-    if ((closedAt && Date.now() > closedAt + CLOSED_RETENTION) || (seen && Date.now() > seen + this.inactiveMs)) {
-      // Cercle fermé ou abandonné : tout est effacé (les données restent sur les appareils).
+    if (closedAt && Date.now() > closedAt + CLOSED_RETENTION && !this.meta('purged') && !(seen && Date.now() > seen + this.inactiveMs)) {
+      // Cercle fermé depuis 30 jours : le contenu est effacé, la pierre tombale reste jusqu'à l'inactivité.
+      this.purgeClosed();
+      await this.rescheduleAlarm();
+      return;
+    }
+    if (seen && Date.now() > seen + this.inactiveMs) {
+      // Cercle abandonné : tout est effacé (les données restent sur les appareils).
       for (const ws of this.ctx.getWebSockets()) ws.close(4001, 'Cercle effacé');
       await this.ctx.storage.deleteAll();
       this.migrate();

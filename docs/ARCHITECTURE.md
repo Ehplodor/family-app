@@ -97,7 +97,11 @@ nouvel appareil déclenche une **alerte de sécurité** chez tous les membres.
 3. Les appareils restants basculent automatiquement vers le nouveau cercle, même s'ils étaient hors ligne : ils
    trouvent leur enveloppe en revenant.
 4. L'appareil retiré ne peut ouvrir aucune enveloppe et ne reçoit plus rien. L'ancien cercle passe en lecture
-   seule, puis est effacé par le relais au bout de 30 jours.
+   seule, puis son contenu est effacé par le relais au bout de 30 jours.
+5. Le relais garde une **« pierre tombale »** de l'ancien cercle (l'empreinte de son jeton et la date de
+   fermeture, rien d'autre) tant qu'un appareil s'y présente. Ainsi, même si l'appareil retiré efface
+   l'ancien cercle, un appareil resté hors ligne apprend qu'il est fermé : il ne peut pas le « recréer » et
+   y renvoyer ses données, que l'appareil retiré pourrait lire.
 
 > Limite inhérente à tout système : un appareil retiré **garde les données qu'il avait déjà**. Le renouvellement
 > protège l'avenir, pas le passé.
@@ -123,16 +127,21 @@ Les identifiants de cercle ne se devinent pas, et les jetons d'accès sont propr
 ouvert, les abus de ressources sont limités :
 
 - nombre de nouveaux cercles par connexion et par jour, compté avec une empreinte « adresse + jour » effacée sous
-  2 jours, ainsi qu'un plafond global journalier ;
+  2 jours (une adresse IPv6 compte pour tout son préfixe /64), ainsi qu'un plafond global journalier ;
 - **quota progressif** par cercle : 20 Mo à l'arrivée, puis +10 Mo par jour jusqu'à 250 Mo. Le relais ne peut pas
   distinguer une vraie photo chiffrée de données inutiles ; c'est donc le temps qui rend l'abus coûteux. Avec ces
   réglages, remplir l'espace gratuit (environ 5 Go) demanderait des semaines d'efforts visibles au lieu de quelques
   minutes ;
 - effacement des cercles inactifs ;
+- nombre de rappels en attente plafonné par cercle (6 000), et rappels à plus de 40 jours ignorés ;
+- notifications envoyées **uniquement** aux services push des navigateurs (Google, Mozilla, Apple,
+  Microsoft) : le relais ne peut pas servir à envoyer des requêtes vers d'autres sites ;
 - seul le site configuré (`ALLOWED_ORIGINS`) peut utiliser le relais depuis un navigateur.
 
 Lors d'un renouvellement de clé, le nouveau cercle prouve détenir le jeton de l'ancien : il garde son ancienneté
-(quota) et n'est pas compté comme une création.
+(quota) et n'est pas compté comme une création. Un cercle ne transmet son ancienneté **qu'une seule fois**, et
+il est alors fermé ; ces renouvellements sont eux aussi limités par connexion et par jour. On ne peut donc pas
+multiplier les cercles « anciens » à partir d'un seul.
 
 ### Menaces couvertes, et celles qui ne le sont pas
 
@@ -144,7 +153,8 @@ Lors d'un renouvellement de clé, le nouveau cercle prouve détenir le jeton de 
 | Téléphone perdu ou volé | Retrait de l'appareil avec renouvellement de clé ; verrouillage et chiffrement du téléphone par le système |
 | Altération ou rejeu de messages par le relais | AES-GCM authentifié, données associées au contexte |
 | Données effacées par le navigateur | Demande de stockage persistant + **sauvegarde chiffrée** (PBKDF2 600 000 itérations + AES-256-GCM) |
-| Code malveillant injecté dans la page | Politique CSP stricte : code et connexions limités à l'appli et au relais configuré |
+| Code malveillant injecté dans la page | Politique CSP stricte : code et connexions limités à l'appli et au relais configuré ; liens des recettes limités à `http(s)` |
+| Site piégé qui affiche l'appli dans un cadre invisible (clickjacking) | L'appli refuse de s'afficher dans un cadre |
 | **Compromission du dépôt GitHub** | ⚠️ Non couvert techniquement : le code servi par GitHub Pages a accès aux clés. **Activez l'authentification à deux facteurs, protégez la branche `main`, relisez les modifications.** Les actions GitHub sont épinglées par empreinte. |
 | **Autre site sur la même origine** | ⚠️ Toutes les pages `https://<compte>.github.io/*` partagent la même origine, donc le même stockage. **N'hébergez pas d'autres projets GitHub Pages sur ce compte, ou utilisez un domaine personnalisé** (ex. `famille.mondomaine.fr`). |
 | Visiteur malveillant qui crée des cercles en masse ou remplit l'espace | Limites de création (par connexion et au total, par jour), quota progressif par cercle, effacement des cercles abandonnés |
