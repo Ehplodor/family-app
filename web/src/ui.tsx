@@ -14,9 +14,12 @@ export function Page({
   actions,
   children,
   className = '',
+  onBack,
 }: {
   title: ReactNode;
   back?: string | false;
+  /** Retour personnalisé (sinon : historique, puis l'écran `back`). */
+  onBack?: () => void;
   actions?: ReactNode;
   children: ReactNode;
   className?: string;
@@ -25,7 +28,7 @@ export function Page({
     <div className={`page ${className}`}>
       <header className="page-header">
         {back !== false && (
-          <button className="icon-btn" onClick={() => goBack(back)} aria-label="Retour">
+          <button className="icon-btn" onClick={() => (onBack ? onBack() : goBack(back))} aria-label="Retour">
             <ChevronLeft size={26} />
           </button>
         )}

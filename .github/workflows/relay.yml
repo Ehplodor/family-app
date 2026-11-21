@@ -1,12 +1,25 @@
-# Déploie le relais sur Cloudflare Workers (lancement manuel : onglet Actions → Relay → Run workflow).
-# Secrets requis : CLOUDFLARE_API_TOKEN (modèle « Edit Cloudflare Workers ») et CLOUDFLARE_ACCOUNT_ID.
+# Déploie le relais sur Cloudflare Workers, sans ordinateur (tout se fait depuis GitHub, même sur téléphone).
+#
+# Prérequis (une seule fois, voir le README « Mise en ligne depuis un téléphone ») :
+#   - secret de dépôt CLOUDFLARE_API_TOKEN (modèle « Edit Cloudflare Workers ») ;
+#   - facultatif : secret CLOUDFLARE_ACCOUNT_ID, si votre jeton donne accès à plusieurs comptes ;
+#   - facultatif : variable RELAY_ALLOWED_ORIGINS (domaine personnalisé), sinon https://<compte>.github.io.
+#
+# Lancement : onglet Actions → Relay → Run workflow. Il se relance aussi tout seul quand le code du relais change sur main.
 name: Relay
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['relay/**', '.github/workflows/relay.yml']
 
 permissions:
   contents: read
+
+concurrency:
+  group: relay
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -14,14 +27,126 @@ jobs:
     defaults:
       run:
         working-directory: relay
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - name: Vérifier la configuration
+        id: config
+        working-directory: .
+        env:
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          CUSTOM_ORIGINS: ${{ vars.RELAY_ALLOWED_ORIGINS }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::warning title=Relais non déployé::Ajoutez le secret CLOUDFLARE_API_TOKEN (voir le README, « Mise en ligne depuis un téléphone »)."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # L'identifiant de compte n'est utile que si le jeton donne accès à plusieurs comptes.
+          [ -n "$CF_ACCOUNT" ] && echo "CLOUDFLARE_ACCOUNT_ID=$CF_ACCOUNT" >> "$GITHUB_ENV"
+          owner="${OWNER,,}"
+          echo "origins=${CUSTOM_ORIGINS:-https://$owner.github.io}" >> "$GITHUB_OUTPUT"
+          echo "site=https://$owner.github.io/$REPO/" >> "$GITHUB_OUTPUT"
+
+      - if: steps.config.outputs.skip != '1'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - if: steps.config.outputs.skip != '1'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-      - run: npm ci
-      - run: npx tsc -p .
-      - run: npx wrangler deploy
+      - if: steps.config.outputs.skip != '1'
+        run: npm ci
+
+      - name: Vérifier le code (types et tests d'intégration sur un relais local)
+        if: steps.config.outputs.skip != '1'
+        run: |
+          npx tsc -p .
+          npm run test:ci
+
+      - name: Déployer sur Cloudflare
+        id: deploy
+        if: steps.config.outputs.skip != '1'
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ORIGINS: ${{ steps.config.outputs.origins }}
+          SITE: ${{ steps.config.outputs.site }}
+        run: |
+          npx wrangler deploy --var "ALLOWED_ORIGINS:$ORIGINS" --var "VAPID_SUBJECT:$SITE" 2>&1 | tee deploy.log
+          url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          if [ -z "$url" ]; then
+            echo "::error title=Adresse introuvable::Cloudflare n'a pas indiqué d'adresse workers.dev. Ouvrez une fois « Workers & Pages » dans le tableau de bord Cloudflare pour choisir votre sous-domaine, puis relancez."
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Créer les clés de notification (une seule fois)
+        if: steps.config.outputs.skip != '1'
+        run: |
+          # Ne JAMAIS régénérer des clés existantes : les notifications déjà activées cesseraient de fonctionner.
+          # D'où trois précautions : si la liste des secrets est illisible, on s'arrête au lieu de supposer
+          # qu'ils n'existent pas ; si une seule des deux clés est présente, on n'écrase rien ;
+          # et les deux clés sont envoyées en une seule requête (jamais l'une sans l'autre).
+          if ! list=$(npx wrangler secret list --format json); then
+            echo "::error title=Secrets illisibles::Impossible de lire les secrets du relais sur Cloudflare. Rien n'a été modifié ; relancez le workflow dans quelques minutes."
+            exit 1
+          fi
+          state=$(node -e '
+            const names = JSON.parse(process.argv[1]).map((s) => s.name);
+            const has = (n) => names.includes(n);
+            process.stdout.write(has("VAPID_PRIVATE_JWK") && has("VAPID_PUBLIC_KEY") ? "both"
+              : has("VAPID_PRIVATE_JWK") || has("VAPID_PUBLIC_KEY") ? "partial" : "none");
+          ' "$list") || { echo "::error title=Secrets illisibles::Réponse inattendue de Cloudflare. Rien n'a été modifié."; exit 1; }
+          case "$state" in
+            both)
+              echo "Clés de notification déjà en place : on les garde."
+              exit 0 ;;
+            partial)
+              echo "::error title=Clés de notification incomplètes::Une seule des deux clés (VAPID_PUBLIC_KEY, VAPID_PRIVATE_JWK) existe sur Cloudflare. Par sécurité, le workflow n'écrase rien. Supprimez-la dans Cloudflare (Workers & Pages → family-app-relay → Settings → Variables and Secrets), puis relancez : une paire neuve sera créée."
+              exit 1 ;;
+          esac
+          keys=$(node scripts/vapid.mjs --json)
+          priv=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).privateJwk)' "$keys")
+          echo "::add-mask::$priv"
+          node -e '
+            const k = JSON.parse(process.argv[1]);
+            process.stdout.write(JSON.stringify({ VAPID_PUBLIC_KEY: k.publicKey, VAPID_PRIVATE_JWK: k.privateJwk }));
+          ' "$keys" | npx wrangler secret bulk
+          echo "Clés de notification créées et enregistrées comme secrets Cloudflare."
+
+      - name: Vérifier le relais en ligne
+        if: steps.config.outputs.skip != '1'
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          for _ in $(seq 1 20); do curl -sf "$URL/" > /dev/null && break; sleep 3; done
+          curl -sf "$URL/" > /dev/null || { echo "::error::Le relais ne répond pas sur $URL"; exit 1; }
+          curl -sf "$URL/vapid" | grep -q '"publicKey":"' || { echo "::error::Clé de notification absente sur le relais"; exit 1; }
+          echo "Relais en ligne : $URL"
+
+      - name: Résumé
+        if: steps.config.outputs.skip != '1'
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+          CURRENT: ${{ vars.RELAY_URL }}
+          ORIGINS: ${{ steps.config.outputs.origins }}
+        run: |
+          {
+            echo "## ✅ Relais déployé"
+            echo
+            echo "**Adresse du relais :**"
+            echo
+            echo '```'
+            echo "$URL"
+            echo '```'
+            echo
+            if [ "$CURRENT" = "$URL" ]; then
+              echo "La variable \`RELAY_URL\` est déjà à jour : rien d'autre à faire."
+            else
+              echo "👉 Copiez cette adresse dans **Settings → Secrets and variables → Actions → Variables → \`RELAY_URL\`**,"
+              echo "puis relancez **Actions → GitHub Pages → Run workflow**."
+              [ -n "$CURRENT" ] && echo && echo "(Valeur actuelle de \`RELAY_URL\` : \`$CURRENT\`)"
+            fi
+            echo
+            echo "Site autorisé à utiliser ce relais : \`$ORIGINS\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -3,12 +3,21 @@ main = "src/index.ts"
 compatibility_date = "2026-10-01"
 
 [vars]
-# Origine(s) autorisée(s), séparées par des virgules. Ex. : "https://ehplodor.github.io"
-ALLOWED_ORIGINS = "*"
-# Contact transmis aux services push (Google, Apple, Mozilla) en cas de problème.
-VAPID_SUBJECT = "mailto:relay@example.invalid"
-# VAPID_PUBLIC_KEY et VAPID_PRIVATE_JWK : générés par `npm run vapid`
-# (la clé privée se règle avec `npx wrangler secret put VAPID_PRIVATE_JWK`).
+# Site(s) autorisé(s) à utiliser ce relais depuis un navigateur, séparés par des virgules.
+# Si vous forkez ce dépôt, mettez ici l'adresse de VOTRE site (ex. "https://<compte>.github.io").
+ALLOWED_ORIGINS = "https://ehplodor.github.io"
+# Contact transmis aux services push (Google, Apple, Mozilla) : l'adresse du site suffit
+# (le workflow « Relay » la règle automatiquement d'après le nom du dépôt).
+VAPID_SUBJECT = "https://ehplodor.github.io/family-app/"
+# Garde-fous pour un relais ouvert au public :
+NEW_CIRCLES_PER_IP_PER_DAY = "3"    # nouvelles familles par connexion et par jour
+NEW_CIRCLES_PER_DAY = "100"         # nouvelles familles par jour, au total
+CIRCLE_QUOTA_START_MB = "20"        # espace d'une famille le jour de son arrivée…
+CIRCLE_QUOTA_PER_DAY_MB = "10"      # … qui grandit chaque jour de…
+CIRCLE_QUOTA_MB = "250"             # … jusqu'à ce maximum (surtout les photos)
+INACTIVE_DAYS = "400"               # un cercle sans aucune connexion pendant ce délai est effacé du relais
+# VAPID_PUBLIC_KEY et VAPID_PRIVATE_JWK : secrets Cloudflare, créés automatiquement par le workflow
+# « Relay » au premier déploiement (ou à la main : `npm run vapid` puis `npx wrangler secret put …`).
 
 [[durable_objects.bindings]]
 name = "CIRCLE"
@@ -18,6 +27,14 @@ class_name = "Circle"
 name = "INVITE"
 class_name = "Invite"
 
+[[durable_objects.bindings]]
+name = "LIMITER"
+class_name = "Limiter"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Circle", "Invite"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Limiter"]

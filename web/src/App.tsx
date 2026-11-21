@@ -10,6 +10,7 @@ import { SettingsPage, DEFAULT_ACCENT } from './pages/Settings';
 import { ChooseMember, Onboarding } from './pages/Onboarding';
 import { SecurityPage } from './pages/Security';
 import { NotificationsPage } from './pages/Notifications';
+import { AboutPage } from './pages/About';
 
 function BottomNav({ active }: { active: 'home' | 'apps' }) {
   return (
@@ -60,6 +61,7 @@ function Shell() {
   if (first === 'settings') return <SettingsPage />;
   if (first === 'security') return <SecurityPage />;
   if (first === 'notifications') return <NotificationsPage />;
+  if (first === 'about') return <AboutPage back="/security" />;
   if (first === 'join') {
     return (
       <Page title="Invitation">

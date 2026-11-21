@@ -1,4 +1,4 @@
-// Tests d'intégration du relais. Lancer d'abord `npx wrangler dev --port 8787`, puis `npm test`.
+// Tests d'intégration du relais. Lancer d'abord `npm run dev:test` (limites basses pour les tester), puis `npm test`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -9,10 +9,20 @@ const BASE = process.env.RELAY_URL || 'http://127.0.0.1:8787';
 const hex = () => crypto.randomBytes(16).toString('hex');
 const token = () => crypto.randomBytes(32).toString('base64url');
 
-async function call(method, path, tok, body) {
+// En local, l'en-tête CF-Connecting-IP permet de simuler des connexions différentes
+// (en production, c'est Cloudflare qui le fixe : impossible à falsifier).
+const randomIp = () => `198.51.100.${crypto.randomInt(1, 254)}-${hex().slice(0, 6)}`;
+
+// X-Test-Bucket cloisonne le plafond global entre les tests (accepté seulement avec ALLOW_TEST_BUCKETS=1).
+async function call(method, path, tok, body, ip = randomIp(), bucket = hex()) {
   const res = await fetch(BASE + path, {
     method,
-    headers: { ...(tok ? { Authorization: `Bearer ${tok}` } : {}), ...(body && !(body instanceof Uint8Array) ? { 'Content-Type': 'application/json' } : {}) },
+    headers: {
+      'CF-Connecting-IP': ip,
+      'X-Test-Bucket': bucket,
+      ...(tok ? { Authorization: `Bearer ${tok}` } : {}),
+      ...(body && !(body instanceof Uint8Array) ? { 'Content-Type': 'application/json' } : {}),
+    },
     body: body instanceof Uint8Array ? body : body ? JSON.stringify(body) : undefined,
   });
   const type = res.headers.get('content-type') || '';
@@ -156,4 +166,64 @@ test('invitation : boîte aux lettres à usage unique', async () => {
   assert.equal((await call('GET', `/i/${id}/response`)).body.data, 'REPONSE');
   await call('POST', `/i/${id}/done`);
   assert.equal((await call('GET', `/i/${id}/response`)).status, 410);
+});
+
+test('relais public : nouvelles familles limitées par connexion et par jour', async () => {
+  const limits = (await call('GET', '/limits')).body;
+  assert.equal(limits.newCirclesPerIpPerDay, 3, 'lancer le relais avec `npm run dev:test`');
+  const ip = randomIp();
+  const circles = Array.from({ length: 4 }, () => ({ id: hex(), tok: token() }));
+  const statuses = [];
+  for (const c of circles) statuses.push((await call('POST', `/c/${c.id}/register`, null, { token: c.tok }, ip)).status);
+  assert.deepEqual(statuses, [200, 200, 200, 429]);
+  // Une famille existante se reconnecte sans être comptée
+  assert.equal((await call('POST', `/c/${circles[0].id}/register`, null, { token: circles[0].tok }, ip)).status, 200);
+  // Une autre connexion peut toujours créer sa famille
+  assert.equal((await call('POST', `/c/${hex()}/register`, null, { token: token() })).status, 200);
+
+  // Renouvellement de clé : la même famille, pas comptée… à condition de prouver le jeton de l'ancien cercle
+  const rotated = { from: circles[0].id, fromToken: circles[0].tok };
+  assert.equal((await call('POST', `/c/${hex()}/register`, null, { token: token(), ...rotated }, ip)).status, 200);
+  const forged = { from: circles[0].id, fromToken: token() };
+  assert.equal((await call('POST', `/c/${hex()}/register`, null, { token: token(), ...forged }, ip)).status, 429);
+});
+
+test('relais public : plafond global de nouvelles familles par jour', async () => {
+  const limits = (await call('GET', '/limits')).body;
+  assert.equal(limits.newCirclesPerDay, 5);
+  const bucket = hex(); // un « jour » isolé pour ce test
+  const statuses = [];
+  for (let i = 0; i < 6; i++) statuses.push((await call('POST', `/c/${hex()}/register`, null, { token: token() }, randomIp(), bucket)).status);
+  assert.deepEqual(statuses, [200, 200, 200, 200, 200, 429]);
+});
+
+test('relais public : quota progressif par famille', async () => {
+  const circle = hex();
+  const tok = token();
+  await call('POST', `/c/${circle}/register`, null, { token: tok });
+  // En test : 0,5 Mo le premier jour (au lieu de 20 Mo), maximum 1 Mo
+  const photo = new Uint8Array(300 * 1024);
+  assert.equal((await call('PUT', `/c/${circle}/blobs/${hex()}`, tok, photo)).status, 200);
+  const full = await call('PUT', `/c/${circle}/blobs/${hex()}`, tok, photo);
+  assert.equal(full.status, 507);
+  assert.match(full.body.error, /pour l'instant/);
+  // Le quota bloque aussi le journal de synchronisation
+  const ws = socket(circle);
+  await ws.open;
+  ws.send({ t: 'hello', token: tok, since: 0 });
+  await ws.next((m) => m.t === 'ready');
+  ws.send({ t: 'push', id: 'q', data: 'x'.repeat(300 * 1024) });
+  assert.equal((await ws.next((m) => m.t === 'error')).error, 'quota');
+  ws.ws.close();
+});
+
+test('relais public : un cercle abandonné est effacé', async () => {
+  const circle = hex();
+  const tok = token();
+  await call('POST', `/c/${circle}/register`, null, { token: tok });
+  const blob = hex();
+  await call('PUT', `/c/${circle}/blobs/${blob}`, tok, new Uint8Array([1]));
+  assert.equal((await call('GET', `/c/${circle}/blobs/${blob}`, tok)).status, 200);
+  await new Promise((r) => setTimeout(r, 19_000)); // INACTIVE_DAYS = 0.0002 jour ≈ 17 s en test
+  assert.equal((await call('GET', `/c/${circle}/blobs/${blob}`, tok)).status, 403);
 });

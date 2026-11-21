@@ -111,13 +111,20 @@ export class Engine {
   /* ------------------------------------------------------------ création / arrivée */
 
   async createCircle(familyName: string, memberName: string, color: string) {
-    await this.setCircle(newSecret());
+    const secret = newSecret();
+    if (RELAY_URL) {
+      // D'abord le relais : si la limite de nouvelles familles est atteinte, on n'a encore rien créé.
+      // Une simple coupure réseau n'empêche pas de commencer (enregistrement au prochain essai).
+      await registerCircle(await deriveCircleKeys(secret)).catch((err: Error) => {
+        if (/limité|Trop de nouvelles/.test(err.message)) throw err;
+      });
+    }
+    await this.setCircle(secret);
     const memberId = randomId();
     await this.setMember(memberId);
     await this.replica.upsert<Member>('members', memberId, { name: memberName, color });
     await this.replica.upsert<FamilySettings>('settings', 'family', { name: familyName });
     await this.registerDevice();
-    if (RELAY_URL) await registerCircle(this.circle!).catch(() => {});
     await this.startSync();
     this.emit();
   }
@@ -169,9 +176,15 @@ export class Engine {
 
   async deleteBlob(id: string) {
     await idb.del('blobs', id);
+    if (this.quotaFull) {
+      this.quotaFull = false;
+      this.emit();
+    }
     if (this.circle && RELAY_URL) await relayFetch(this.circle, `/blobs/${id}`, { method: 'DELETE' }).catch(() => {});
   }
 
+  /** Le relais a refusé une photo faute de place. */
+  quotaFull = false;
   private blobFlushing = false;
   async flushPendingBlobs() {
     if (this.blobFlushing || !this.sync || !RELAY_URL) return;
@@ -184,8 +197,12 @@ export class Engine {
         pending = pending.filter((p) => p !== id);
         await idb.put('kv', 'pendingBlobs', pending);
       }
-    } catch {
-      /* hors ligne : réessai plus tard */
+    } catch (err) {
+      // 507 = espace de la famille plein sur le relais ; sinon hors ligne : réessai plus tard.
+      if (String(err).includes('507') && !this.quotaFull) {
+        this.quotaFull = true;
+        this.emit();
+      }
     } finally {
       this.blobFlushing = false;
     }
@@ -228,7 +245,7 @@ export class Engine {
 
     // 4. Bascule vers le nouveau cercle et envoi de l'état complet.
     await this.setCircle(secret);
-    await registerCircle(this.circle!);
+    await registerCircle(this.circle!, oldCircle);
     await this.startSync();
     await this.sync!.pushRecords(this.replica.allRecords((r) => r.c !== '_rotation'));
     for (const id of photoIds) {

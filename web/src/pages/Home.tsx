@@ -3,6 +3,7 @@ import { useDoc, useEngine, useLocalState, useMe, useNotifier, useSyncStatus } f
 import type { Device } from '../lib/engine';
 import { pushSupported } from '../lib/notify';
 import { RELAY_URL } from '../lib/sync';
+import { InstallCard } from './About';
 import { navigate } from '../router';
 import { DEFAULT_HOME, moduleById, type ModuleDef } from '../modules';
 import { capitalize, fmt, today } from '../dates';
@@ -41,7 +42,7 @@ function TodayCard() {
 
 function SyncBadge() {
   const status = useSyncStatus();
-  const label = { local: 'Sur cet appareil uniquement', connecting: 'Connexion…', online: 'Synchronisé, chiffré de bout en bout', offline: 'Hors ligne', denied: 'Accès refusé', closed: 'Cercle fermé' }[status];
+  const label = { local: 'Sur cet appareil uniquement', connecting: 'Connexion…', online: 'Synchronisé, chiffré de bout en bout', offline: 'Hors ligne', denied: 'Accès refusé', closed: 'Cercle fermé', full: 'Espace plein sur le relais' }[status];
   const Icon = status === 'local' ? HardDrive : status === 'online' ? Cloud : CloudOff;
   return (
     <button className={`sync-badge ${status}`} onClick={() => navigate('/security')} aria-label={label} title={label}>
@@ -85,6 +86,7 @@ export function HomePage() {
           <Avatar member={member} size={48} />
         </button>
       </header>
+      <InstallCard compact />
       <PushBanner />
       <TodayCard />
       <div className="tiles">

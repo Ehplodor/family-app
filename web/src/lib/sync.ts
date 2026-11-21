@@ -9,7 +9,7 @@ import type { DocRecord, Op, Replica } from './replica';
 
 export const RELAY_URL: string = (import.meta.env.VITE_RELAY_URL ?? '').replace(/\/$/, '');
 
-export type SyncStatus = 'local' | 'connecting' | 'online' | 'offline' | 'denied' | 'closed';
+export type SyncStatus = 'local' | 'connecting' | 'online' | 'offline' | 'denied' | 'closed' | 'full';
 type Payload = { ops?: Op[]; records?: DocRecord[] };
 
 const MAX_OPS_PER_BATCH = 300;
@@ -24,13 +24,20 @@ export async function relayFetch(keys: CircleKeys, path: string, init: RequestIn
   return res;
 }
 
-export async function registerCircle(keys: CircleKeys): Promise<{ closed: boolean }> {
+/**
+ * Enregistre le cercle auprès du relais. `previous` : lors d'un renouvellement de clé, l'ancien cercle,
+ * dont on prouve détenir le jeton pour garder l'ancienneté (quota) sans compter comme une nouvelle famille.
+ */
+export async function registerCircle(keys: CircleKeys, previous?: CircleKeys): Promise<{ closed: boolean }> {
   const res = await fetch(`${RELAY_URL}/c/${keys.circleId}/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token: keys.token }),
+    body: JSON.stringify({ token: keys.token, ...(previous ? { from: previous.circleId, fromToken: previous.token } : {}) }),
   });
-  if (!res.ok) throw new Error(res.status === 403 ? 'Accès refusé par le relais' : `Relais : ${res.status}`);
+  if (!res.ok) {
+    const msg = ((await res.json().catch(() => ({}))) as { error?: string }).error;
+    throw new Error(res.status === 403 ? 'Accès refusé par le relais' : (msg ?? `Relais : ${res.status}`));
+  }
   return res.json();
 }
 
@@ -216,6 +223,7 @@ export class SyncClient {
         const i = this.inflight.findIndex((f) => f.id === m.id);
         if (i >= 0) this.inflight.splice(i, 1)[0].reject(new Error(m.error));
         if (m.error === 'closed') this.setStatus('closed');
+        if (m.error === 'quota') this.setStatus('full');
         break;
       }
     }

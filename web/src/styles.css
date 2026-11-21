@@ -1309,3 +1309,26 @@ hr {
 .child-picker {
   margin-bottom: 4px;
 }
+
+/* ---------- Installation, À propos ---------- */
+.install {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.install.compact {
+  margin-bottom: 14px;
+}
+.prose h3 {
+  margin-top: 18px;
+}
+.prose h3:first-child {
+  margin-top: 0;
+}
+.prose p,
+.prose li {
+  line-height: 1.5;
+}
+.prose ul {
+  padding-left: 20px;
+}

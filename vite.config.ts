@@ -27,9 +27,28 @@ function csp(relay: string): Plugin {
   };
 }
 
+/** Refuse une adresse de relais invalide (ex. l'exemple du README recopié tel quel). */
+function checkRelay(relay: string) {
+  if (!relay) return;
+  let url: URL | null = null;
+  try {
+    url = new URL(relay);
+  } catch {
+    /* invalide */
+  }
+  const local = url && /^(localhost|127\.0\.0\.1)$/.test(url.hostname);
+  if (!url || /[<>\s]/.test(relay) || (url.protocol !== 'https:' && !local) || url.pathname.replace(/\/$/, '') !== '') {
+    throw new Error(
+      `VITE_RELAY_URL invalide : « ${relay} ». Mettez l'adresse exacte affichée par \`npx wrangler deploy\` ` +
+        '(ex. https://family-app-relay.mon-compte.workers.dev), sans chemin ni barre finale.',
+    );
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_');
-  const relay = (env.VITE_RELAY_URL ?? '').replace(/\/$/, '');
+  const relay = (env.VITE_RELAY_URL ?? '').trim().replace(/\/$/, '');
+  checkRelay(relay);
   return {
     root: 'web',
     base: './', // chemins relatifs : fonctionne sur https://<compte>.github.io/<dépôt>/
