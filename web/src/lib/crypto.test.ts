@@ -53,9 +53,10 @@ describe('chiffrement', () => {
   });
 
   it('protège les sauvegardes par phrase secrète', async () => {
-    const file = await passphraseSeal('ma phrase très longue', utf8.encode('{"ok":1}'));
-    expect(file).not.toContain('ok');
-    expect(new TextDecoder().decode(await passphraseOpen('ma phrase très longue', file))).toBe('{"ok":1}');
+    const file = await passphraseSeal('ma phrase très longue', utf8.encode('{"motsecret":1}'));
+    // (Un mot court comme « ok » apparaissait parfois par hasard dans le texte chiffré : test instable.)
+    expect(file).not.toContain('motsecret');
+    expect(new TextDecoder().decode(await passphraseOpen('ma phrase très longue', file))).toBe('{"motsecret":1}');
     await expect(passphraseOpen('mauvaise phrase', file)).rejects.toThrow();
   }, 30_000);
 

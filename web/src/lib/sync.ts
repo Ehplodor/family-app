@@ -13,6 +13,27 @@ export type SyncStatus = 'local' | 'connecting' | 'online' | 'offline' | 'denied
 type Payload = { ops?: Op[]; records?: DocRecord[] };
 
 const MAX_OPS_PER_BATCH = 300;
+/** Taille visée d'un paquet en clair : une fois chiffré (+33 %), il reste sous la limite du relais (512 Ko). */
+const MAX_BATCH_CHARS = 300_000;
+
+/** Découpe une liste en paquets dont la taille JSON reste sous MAX_BATCH_CHARS (au moins un élément par paquet). */
+export function chunkBySize<T>(items: T[], max = MAX_BATCH_CHARS): T[][] {
+  const out: T[][] = [];
+  let cur: T[] = [];
+  let size = 0;
+  for (const it of items) {
+    const n = JSON.stringify(it).length + 1;
+    if (cur.length && size + n > max) {
+      out.push(cur);
+      cur = [];
+      size = 0;
+    }
+    cur.push(it);
+    size += n;
+  }
+  if (cur.length) out.push(cur);
+  return out;
+}
 const SNAPSHOT_EVERY = 300;
 
 export async function relayFetch(keys: CircleKeys, path: string, init: RequestInit = {}): Promise<Response> {
@@ -203,7 +224,7 @@ export class SyncClient {
           // Le relais a perdu ou effacé l'historique : on repart de zéro et on renvoie tout.
           this.lastSeq = 0;
           await idb.put('kv', this.kv('seq'), 0);
-          this.send({ records: this.replica.allRecords((r) => r.c !== '_rotation') }).catch(() => {});
+          this.pushRecords(this.replica.allRecords((r) => r.c !== '_rotation')).catch(() => {});
         }
         await this.setSeq(m.seq ?? 0);
         this.setStatus(m.closed ? 'closed' : 'online');
@@ -246,9 +267,18 @@ export class SyncClient {
     this.flushing = true;
     try {
       for (;;) {
-        const pending = await idb.entries<Op>('outbox', MAX_OPS_PER_BATCH);
-        if (!pending.length) break;
-        await this.send({ ops: pending.map(([, op]) => op) });
+        const all = await idb.entries<Op>('outbox', MAX_OPS_PER_BATCH);
+        if (!all.length) break;
+        // Paquet limité en taille : un gros document (calendrier importé…) part seul.
+        const pending = chunkBySize(all)[0];
+        try {
+          await this.send({ ops: pending.map(([, op]) => op) });
+        } catch (err) {
+          // Une seule modification trop volumineuse pour le relais : elle ne passera jamais.
+          // On l'écarte (elle reste sur cet appareil) pour ne pas bloquer toute la synchronisation.
+          if ((err as Error).message !== 'too_large' || pending.length > 1) throw err;
+          console.warn('Modification trop volumineuse, non synchronisée');
+        }
         await idb.del('outbox', IDBKeyRange.bound(pending[0][0], pending[pending.length - 1][0]));
       }
     } catch {
@@ -262,7 +292,9 @@ export class SyncClient {
   async pushRecords(records: DocRecord[]) {
     await this.whenReady();
     const CHUNK = 200;
-    for (let i = 0; i < records.length; i += CHUNK) await this.send({ records: records.slice(i, i + CHUNK) });
+    for (let i = 0; i < records.length; i += CHUNK) {
+      for (const part of chunkBySize(records.slice(i, i + CHUNK))) await this.send({ records: part });
+    }
   }
 
   /** Compaction : remplace l'historique du relais par un instantané chiffré. */

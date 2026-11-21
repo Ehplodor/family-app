@@ -151,6 +151,27 @@ export function icsTime(ev: IcsEvent, iso: string): string | undefined {
 /* ------------------------------------------------------------------ Lecture d'un fichier .ics */
 
 const MAX_EVENTS = 2000;
+const MAX_TITLE = 150;
+/**
+ * Taille maximale des événements d'un calendrier une fois écrits (≈ 200 Ko). Au-delà, le paquet chiffré
+ * dépasserait la limite du relais (512 Ko) et bloquerait la synchronisation de toute la famille.
+ */
+export const MAX_CALENDAR_BYTES = 200_000;
+
+/** Garde les événements les plus proches d'aujourd'hui tant que la taille totale reste raisonnable. */
+function fitBudget(events: IcsEvent[], todayIso: string): IcsEvent[] {
+  const today = parseISODate(todayIso).getTime();
+  const dist = (ev: IcsEvent) => Math.abs(parseISODate(ev.d).getTime() - today);
+  const kept: IcsEvent[] = [];
+  let size = 2;
+  for (const ev of [...events].sort((a, b) => dist(a) - dist(b))) {
+    const n = JSON.stringify(ev).length + 1;
+    if (kept.length >= MAX_EVENTS || size + n > MAX_CALENDAR_BYTES) break;
+    kept.push(ev);
+    size += n;
+  }
+  return kept.sort((a, b) => a.d.localeCompare(b.d));
+}
 
 function unescapeText(s: string) {
   return s.replace(/\\([\\,;nN])/g, (_, c: string) => (c === 'n' || c === 'N' ? ' ' : c)).trim();
@@ -210,7 +231,7 @@ export function parseIcs(text: string, todayIso: string): { name?: string; event
     const start = parseStamp(raw.DTSTART.v, raw.DTSTART.p);
     if (!start) return;
     const end = raw.DTEND ? parseStamp(raw.DTEND.v, raw.DTEND.p) : null;
-    const ev: IcsEvent = { t: unescapeText(raw.SUMMARY?.v ?? '') || '(sans titre)', d: start.date };
+    const ev: IcsEvent = { t: unescapeText(raw.SUMMARY?.v ?? '').slice(0, MAX_TITLE) || '(sans titre)', d: start.date };
     if (start.time) {
       ev.s = start.time;
       if (end?.time) ev.f = end.time;
@@ -258,13 +279,13 @@ export function parseIcs(text: string, todayIso: string): { name?: string; event
     else if (key === 'END' && value.toUpperCase() === 'VEVENT') {
       if (cur) finish(cur);
       cur = null;
-      if (events.length >= MAX_EVENTS) break;
+      if (events.length >= MAX_EVENTS * 2) break;
     } else if (cur) {
       if (!(key in cur)) cur[key] = { v: value, p: params.join(';').toUpperCase() };
     } else if (key === 'X-WR-CALNAME' && !name) name = unescapeText(value);
   }
   if (!name && !events.length && !/BEGIN:VCALENDAR/i.test(text)) throw new Error("Ce fichier n'est pas un calendrier (.ics)");
-  return { name, events: events.slice(0, MAX_EVENTS) };
+  return { name: name?.slice(0, MAX_TITLE), events: fitBudget(events, todayIso) };
 }
 
 /** Adresse d'abonnement acceptée : https (webcal:// est converti). */
