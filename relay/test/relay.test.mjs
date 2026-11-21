@@ -306,3 +306,13 @@ test('relais public : une connexion IPv6 compte pour tout son préfixe /64', asy
   assert.deepEqual(statuses, [200, 200, 200, 429]);
   assert.equal((await call('POST', `/c/${hex()}/register`, null, { token: token() }, `${prefix}::99`)).status, 429);
 });
+
+test('abonnement .ics : réservé au cercle, adresses publiques https uniquement', async () => {
+  const circle = hex();
+  const tok = token();
+  assert.equal((await call('POST', `/c/${circle}/register`, null, { token: tok })).status, 200);
+  assert.equal((await call('POST', `/c/${circle}/ics`, token(), { url: 'https://example.com/a.ics' })).status, 403);
+  for (const url of ['http://example.com/a.ics', 'https://127.0.0.1/a.ics', 'https://localhost/a.ics', 'https://user:pw@example.com/a.ics', 42]) {
+    assert.equal((await call('POST', `/c/${circle}/ics`, tok, { url })).status, 400, String(url));
+  }
+});

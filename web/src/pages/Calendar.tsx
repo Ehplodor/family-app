@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Cake, ChevronLeft, ChevronRight, Search, X } from 'lucide-react';
+import { Cake, ChevronLeft, ChevronRight, Layers, Search, X } from 'lucide-react';
 import { useCollection, useMembers } from '../store';
 import { addMonths, capitalize, fmt, parseISODate, startOfWeek, addDays, toISODate, today } from '../dates';
 import { Avatar, Empty, Fab, Field, FieldGroup, MemberChips, Page, Sheet, confirmDelete } from '../ui';
@@ -7,6 +7,8 @@ import type { Doc, Member } from '../store';
 import type { Birthday } from './Birthdays';
 import { occursOn, spanEnd, spanPart, timeLabel, type Repeat } from '../lib/recurrence';
 import { KIND_EMOJI, KIND_LABEL, type Homework } from '../lib/school';
+import { holidayOn, icsEventsOn, icsTime, schoolHolidayOn, type ImportedCalendar } from '../lib/calendars';
+import { CalendarsSheet, HOLIDAY_COLOR, isShown, useCalendarPrefs, useRefreshSubscriptions, VACATION_COLOR } from './Calendars';
 import { visibleFor } from '../lib/calendarSearch';
 import { CalendarSearch } from './CalendarSearch';
 
@@ -44,6 +46,8 @@ export function useDayAgenda() {
   const { docs: events } = useCollection<CalEvent>('events');
   const { docs: birthdays } = useCollection<Birthday>('birthdays');
   const { docs: homework } = useCollection<Homework>('homework');
+  const { docs: imported } = useCollection<ImportedCalendar>('calendars');
+  const prefs = useCalendarPrefs();
   const { byId } = useMembers();
   return useMemo(
     () =>
@@ -89,9 +93,28 @@ export function useDayAgenda() {
               members: child ? [child] : [],
             };
           });
-        return [...bdays, ...school, ...evs];
+        // Calendriers supplémentaires (fériés, vacances, imports) : discrets, en tête de journée.
+        const extra: Occurrence[] = [];
+        const holiday = isShown(prefs, 'holidays') ? holidayOn(iso) : undefined;
+        if (holiday) extra.push({ key: `fr-${iso}`, title: `🇫🇷 ${holiday}`, time: 'Férié', color: HOLIDAY_COLOR, members: [] });
+        const vacation = isShown(prefs, 'vacances') && prefs.zone ? schoolHolidayOn(iso, prefs.zone) : undefined;
+        if (vacation) {
+          extra.push({ key: `vac-${iso}`, title: `🏖️ ${vacation} (zone ${prefs.zone})`, color: VACATION_COLOR, members: [] });
+        }
+        for (const cal of imported) {
+          if (!isShown(prefs, cal.id)) continue;
+          icsEventsOn(cal.events ?? [], iso).forEach((ev, i) =>
+            extra.push({ key: `ics-${cal.id}-${i}`, title: ev.t, time: icsTime(ev, iso), color: cal.color, members: [] }),
+          );
+        }
+        return [
+          ...extra,
+          ...(isShown(prefs, 'birthdays') ? bdays : []),
+          ...(isShown(prefs, 'school') ? school : []),
+          ...(isShown(prefs, 'main') ? evs : []),
+        ];
       },
-    [events, birthdays, homework, byId],
+    [events, birthdays, homework, imported, prefs, byId],
   );
 }
 
@@ -140,6 +163,8 @@ export function CalendarPage() {
   const [selected, setSelected] = useState(today());
   const [month, setMonth] = useState(() => parseISODate(today()));
   const [editing, setEditing] = useState<Doc<CalEvent> | 'new' | null>(null);
+  const [choosing, setChoosing] = useState(false);
+  useRefreshSubscriptions();
 
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
   const gridStart = startOfWeek(first);
@@ -177,8 +202,11 @@ export function CalendarPage() {
       title="Calendrier"
       actions={
         <>
+          <button className="icon-btn compact" onClick={() => setChoosing(true)} aria-label="Calendriers affichés">
+            <Layers size={22} />
+          </button>
           <button
-            className="icon-btn"
+            className="icon-btn compact"
             onClick={() => setSearching((s) => !s)}
             aria-label={searching ? 'Fermer la recherche' : 'Rechercher'}
           >
@@ -267,6 +295,9 @@ export function CalendarPage() {
       )}
 
       <Fab onClick={() => setEditing('new')} label="Nouvel événement" />
+      <Sheet open={choosing} title="Calendriers" onClose={() => setChoosing(false)}>
+        {choosing && <CalendarsSheet />}
+      </Sheet>
       <Sheet open={!!editing} title={editing === 'new' ? 'Nouvel événement' : "Modifier l'événement"} onClose={() => setEditing(null)}>
         {editing && (
           <EventForm

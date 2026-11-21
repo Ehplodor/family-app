@@ -1373,6 +1373,36 @@ hr {
   padding-left: 20px;
 }
 
+/* Choix des calendriers */
+.cal-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cal-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.cal-list li > .toggle {
+  flex: 1;
+  min-width: 0;
+}
+.cal-list li > .card,
+.cal-list li > .cal-zone {
+  flex-basis: 100%;
+}
+.cal-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
 /* ---------- Calendrier : filtre par personne et recherche ---------- */
 .cal-filter {
   margin-bottom: 12px;
@@ -1389,4 +1419,8 @@ hr {
   flex-direction: column;
   gap: 10px;
   margin-bottom: 16px;
+}
+/* En-tête chargé (calendrier) : icônes plus serrées pour garder le titre lisible sur téléphone. */
+.icon-btn.compact {
+  width: 32px;
 }
