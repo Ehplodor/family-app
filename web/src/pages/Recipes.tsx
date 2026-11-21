@@ -115,8 +115,8 @@ function RecipeDetail({ id }: { id: string }) {
             <Users size={14} /> {r.servings}
           </span>
         )}
-        {r.link && (
-          <a className="pill accent" href={r.link} target="_blank" rel="noreferrer">
+        {safeLink(r.link) && (
+          <a className="pill accent" href={safeLink(r.link)} target="_blank" rel="noreferrer">
             Source
           </a>
         )}
@@ -184,4 +184,15 @@ function RecipeForm({ initial, onSubmit }: { initial?: Recipe; onSubmit: (r: Rec
       </button>
     </form>
   );
+}
+
+/** N'accepte que les liens web (http/https) : jamais « javascript: » ou « data: » saisis dans une recette. */
+function safeLink(link?: string): string | undefined {
+  if (!link) return undefined;
+  try {
+    const url = new URL(link.trim());
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
 }
