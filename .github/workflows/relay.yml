@@ -27,14 +27,14 @@ jobs:
     defaults:
       run:
         working-directory: relay
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    # Le jeton Cloudflare n'est donné qu'aux étapes qui en ont besoin : `npm ci` et les tests exécutent le
+    # code des dépendances npm, qui n'a pas à voir ce jeton.
     steps:
       - name: Vérifier la configuration
         id: config
         working-directory: .
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
           CUSTOM_ORIGINS: ${{ vars.RELAY_ALLOWED_ORIGINS }}
@@ -44,8 +44,6 @@ jobs:
             echo "skip=1" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # L'identifiant de compte n'est utile que si le jeton donne accès à plusieurs comptes.
-          [ -n "$CF_ACCOUNT" ] && echo "CLOUDFLARE_ACCOUNT_ID=$CF_ACCOUNT" >> "$GITHUB_ENV"
           owner="${OWNER,,}"
           echo "origins=${CUSTOM_ORIGINS:-https://$owner.github.io}" >> "$GITHUB_OUTPUT"
           echo "site=https://$owner.github.io/$REPO/" >> "$GITHUB_OUTPUT"
@@ -69,9 +67,13 @@ jobs:
         id: deploy
         if: steps.config.outputs.skip != '1'
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Identifiant de compte : utile seulement si le jeton donne accès à plusieurs comptes.
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           ORIGINS: ${{ steps.config.outputs.origins }}
           SITE: ${{ steps.config.outputs.site }}
         run: |
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
           npx wrangler deploy --var "ALLOWED_ORIGINS:$ORIGINS" --var "VAPID_SUBJECT:$SITE" 2>&1 | tee deploy.log
           url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
           if [ -z "$url" ]; then
@@ -82,7 +84,12 @@ jobs:
 
       - name: Créer les clés de notification (une seule fois)
         if: steps.config.outputs.skip != '1'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Identifiant de compte : utile seulement si le jeton donne accès à plusieurs comptes.
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
           # Ne JAMAIS régénérer des clés existantes : les notifications déjà activées cesseraient de fonctionner.
           # D'où trois précautions : si la liste des secrets est illisible, on s'arrête au lieu de supposer
           # qu'ils n'existent pas ; si une seule des deux clés est présente, on n'écrase rien ;
