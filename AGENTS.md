@@ -9,7 +9,7 @@ Application familiale **local-first** (PWA) : les données vivent sur les appare
 membres via un **relais aveugle** qui ne voit que du chiffré de bout en bout.
 
 - `web/` : l'appli (React + Vite), publiée sur **GitHub Pages** (`https://ehplodor.github.io/family-app/`).
-- `relay/` : le relais (Cloudflare Worker + Durable Objects), déployé sur `family-app-relay.chocorou.workers.dev`.
+- `relay/` : le relais (Cloudflare Worker + Durable Objects), déployé sur `family-app-relay.ehplodor.workers.dev`.
 - Le site est **public** : n'importe qui peut créer sa famille. Le relais est donc un **service partagé** par
   des familles inconnues.
 
