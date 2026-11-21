@@ -135,7 +135,7 @@ avec la clé du cercle.
 
 - Chaque modification est une **opération** : document, champs modifiés, horloge logique hybride (HLC).
 - **Fusion champ par champ, la plus récente gagne** (CRDT « last-writer-wins »). Si Julie coche « lait » pendant que
-  Rodolphe renomme ce même article, les deux modifications sont conservées.
+  Paul renomme ce même article, les deux modifications sont conservées.
 - Deux appareils qui reçoivent les mêmes opérations, **dans n'importe quel ordre**, aboutissent au même état. C'est
   vérifié par les tests, y compris quand l'horloge d'un téléphone retarde.
 - Les opérations faites hors ligne attendent dans une file locale persistante (`outbox`) et partent au retour du
