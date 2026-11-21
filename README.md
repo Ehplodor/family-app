@@ -72,9 +72,17 @@ Vous pouvez aussi déployer le relais depuis GitHub (onglet *Actions → Relay*)
 ### 2. L'appli sur GitHub Pages
 
 1. *Settings → Pages → Build and deployment → Source* : **GitHub Actions**.
-2. *Settings → Secrets and variables → Actions → Variables* : créez `RELAY_URL` = l'adresse du relais.
-3. Poussez sur `main` : le workflow lance les tests, construit et publie l'appli sur
-   `https://<compte>.github.io/family-app/`.
+2. *Settings → Secrets and variables → Actions* → onglet **Variables** → **Repository variables** → *New repository
+   variable* : `RELAY_URL` = l'adresse **exacte** affichée par `npx wrangler deploy`
+   (ex. `https://family-app-relay.mon-compte.workers.dev`).
+   - Pas dans *Secrets* : l'adresse n'est pas secrète, elle figure dans l'appli publiée.
+   - Pas dans *Environment variables* : la construction ne les voit pas.
+   - Une adresse invalide (par exemple avec `<compte>` laissé tel quel) fait échouer la construction avec un message
+     explicite.
+3. *Settings → Environments → github-pages → Deployment branches and tags* : vérifiez que **`main`** est autorisée.
+   GitHub n'autorise que la branche par défaut du moment où Pages a été activé.
+4. Poussez sur `main` (ou *Actions → GitHub Pages → Run workflow*) : le workflow lance les tests, construit et publie
+   l'appli sur `https://<compte>.github.io/family-app/`.
 
 > 🔐 **Important pour la sécurité :**
 > - Activez l'**authentification à deux facteurs** sur GitHub et protégez la branche `main` : le code publié a accès
