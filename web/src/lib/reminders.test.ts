@@ -30,6 +30,13 @@ describe('rappels', () => {
     expect(computeReminders(data, 'x', prefs, NOW)).toHaveLength(3); // J0, J+7, J+14
   });
 
+  it('ne rappelle qu’une fois un événement à heure fixe sur plusieurs jours', () => {
+    const data = { ...empty, events: [{ id: 'w', title: 'Week-end ski', date: day(1), endDate: day(3), allDay: false, start: '14:00', end: '18:00', memberIds: [] }] };
+    const r = computeReminders(data, 'x', prefs, NOW);
+    expect(r).toHaveLength(1);
+    expect(new Date(r[0].at).getDate()).toBe(22);
+  });
+
   it('décale les notifications non urgentes après les heures calmes', () => {
     const late = new Date(2026, 10, 21, 23, 15).getTime();
     const shifted = new Date(outOfQuietHours(late, prefs));

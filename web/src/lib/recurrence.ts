@@ -20,6 +20,28 @@ export function occursOn(ev: { date: string; endDate?: string; repeat?: Repeat }
   }
 }
 
+/** Fin effective d'un événement sur plusieurs jours (uniquement s'il ne se répète pas). */
+export function spanEnd(ev: { date: string; endDate?: string; repeat?: Repeat }): string | undefined {
+  return (ev.repeat ?? 'none') === 'none' && ev.endDate && ev.endDate > ev.date ? ev.endDate : undefined;
+}
+
+/** Place d'un jour dans un événement sur plusieurs jours : premier, milieu ou dernier jour. */
+export function spanPart(ev: { date: string; endDate?: string; repeat?: Repeat }, iso: string): 'first' | 'middle' | 'last' | undefined {
+  const end = spanEnd(ev);
+  if (!end || iso < ev.date || iso > end) return undefined;
+  return iso === ev.date ? 'first' : iso === end ? 'last' : 'middle';
+}
+
+/** Heure affichée un jour donné : « 14:00 → » le premier jour, « → 18:00 » le dernier, rien entre les deux. */
+export function timeLabel(ev: { date: string; endDate?: string; repeat?: Repeat; allDay: boolean; start?: string; end?: string }, iso: string): string | undefined {
+  if (ev.allDay) return undefined;
+  const part = spanPart(ev, iso);
+  if (part === 'first') return ev.start ? `${ev.start} →` : undefined;
+  if (part === 'last') return ev.end ? `→ ${ev.end}` : undefined;
+  if (part === 'middle') return undefined;
+  return [ev.start, ev.end].filter(Boolean).join(' – ') || undefined;
+}
+
 function advance(iso: string, repeat: TaskRepeat): string {
   const d = parseISODate(iso);
   if (repeat === 'daily') return toISODate(addDays(d, 1));
