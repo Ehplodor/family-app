@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Cake, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Cake, ChevronLeft, ChevronRight, Search, X } from 'lucide-react';
 import { useCollection, useMembers } from '../store';
 import { addMonths, capitalize, fmt, parseISODate, startOfWeek, addDays, toISODate, today } from '../dates';
 import { Avatar, Empty, Fab, Field, FieldGroup, MemberChips, Page, Sheet, confirmDelete } from '../ui';
@@ -7,6 +7,8 @@ import type { Doc, Member } from '../store';
 import type { Birthday } from './Birthdays';
 import { occursOn, type Repeat } from '../lib/recurrence';
 import { KIND_EMOJI, KIND_LABEL, type Homework } from '../lib/school';
+import { visibleFor } from '../lib/calendarSearch';
+import { CalendarSearch } from './CalendarSearch';
 
 export type { Repeat };
 export type CalEvent = {
@@ -115,7 +117,15 @@ const WEEKDAYS = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
 
 export function CalendarPage() {
   const events = useCollection<CalEvent>('events');
-  const agenda = useDayAgenda();
+  const fullAgenda = useDayAgenda();
+  const { members } = useMembers();
+  // Filtre par personne (vide = tout le monde) et recherche : propres à cet écran, non partagés.
+  const [filter, setFilter] = useState<string[]>([]);
+  const [searching, setSearching] = useState(false);
+  const agenda = useMemo(
+    () => (iso: string) => fullAgenda(iso).filter((o) => visibleFor(o.members.map((m) => m.id), filter)),
+    [fullAgenda, filter],
+  );
   const [selected, setSelected] = useState(today());
   const [month, setMonth] = useState(() => parseISODate(today()));
   const [editing, setEditing] = useState<Doc<CalEvent> | 'new' | null>(null);
@@ -135,11 +145,35 @@ export function CalendarPage() {
     <Page
       title="Calendrier"
       actions={
-        <button className="btn small" onClick={goToday}>
-          Aujourd'hui
-        </button>
+        <>
+          <button
+            className="icon-btn"
+            onClick={() => setSearching((s) => !s)}
+            aria-label={searching ? 'Fermer la recherche' : 'Rechercher'}
+          >
+            {searching ? <X /> : <Search />}
+          </button>
+          <button className="btn small" onClick={goToday}>
+            Aujourd'hui
+          </button>
+        </>
       }
     >
+      {members.length > 1 && (
+        <div className="cal-filter">
+          <MemberChips members={members} value={filter} onChange={setFilter} />
+        </div>
+      )}
+      {searching && (
+        <CalendarSearch
+          filter={filter}
+          onPick={(iso) => {
+            setSelected(iso);
+            setMonth(parseISODate(iso));
+            setSearching(false);
+          }}
+        />
+      )}
       <div className="card calendar">
         <div className="cal-head">
           <button className="icon-btn" onClick={() => setMonth(addMonths(first, -1))} aria-label="Mois précédent">

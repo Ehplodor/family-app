@@ -1332,3 +1332,21 @@ hr {
 .prose ul {
   padding-left: 20px;
 }
+
+/* ---------- Calendrier : filtre par personne et recherche ---------- */
+.cal-filter {
+  margin-bottom: 12px;
+  overflow-x: auto;
+}
+.cal-filter .chips {
+  flex-wrap: nowrap;
+}
+.cal-filter .chip {
+  white-space: nowrap;
+}
+.cal-search {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
