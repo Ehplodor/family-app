@@ -9,6 +9,7 @@
  */
 import { addDays, fmt, parseISODate, toISODate } from '../dates';
 import { occursOn, type Repeat, type TaskRepeat } from './recurrence';
+import { computeSchoolReminders, type SchoolData } from './school';
 
 export type NotifPrefs = {
   events: boolean;
@@ -29,6 +30,10 @@ export type NotifPrefs = {
   lists: boolean;
   photos: boolean;
   calendarChanges: boolean;
+  /** Rappels de l'espace école (devoirs, cartable, petites questions). */
+  school: boolean;
+  /** Recevoir les copies des rappels de mes enfants (si l'enfant l'a prévu). */
+  schoolCopies: boolean;
   quietStart: string;
   quietEnd: string;
 };
@@ -49,18 +54,22 @@ export const DEFAULT_PREFS: NotifPrefs = {
   lists: true,
   photos: true,
   calendarChanges: true,
+  school: true,
+  schoolCopies: true,
   quietStart: '21:30',
   quietEnd: '07:30',
 };
 
 export type Reminder = {
   at: number;
-  kind: 'event' | 'digest' | 'birthday' | 'task' | 'meal' | 'planning';
+  kind: 'event' | 'digest' | 'birthday' | 'task' | 'meal' | 'planning' | 'school' | 'bag' | 'quiz';
   title: string;
   body: string;
   tag: string;
   url: string;
   urgent: boolean;
+  /** Réponse d'une petite question (affichée par le bouton « Voir la réponse »). */
+  answer?: string;
 };
 
 export type ReminderData = {
@@ -68,6 +77,7 @@ export type ReminderData = {
   birthdays: { id: string; name: string; day: number; month: number; year?: number | null; notes?: string }[];
   tasks: { id: string; title: string; due: string; time?: string; repeat: TaskRepeat; done?: boolean; assigneeId?: string | null }[];
   meals: { date: string; slot: 'lunch' | 'dinner'; title: string }[];
+  school?: SchoolData;
 };
 
 const HORIZON_DAYS = 14;
@@ -228,6 +238,16 @@ export function computeReminders(data: ReminderData, memberId: string, prefs: No
       if (meals.length) parts.push(`🍽️ ${meals.map((m) => m.title).join(', ')}`);
       if (!parts.length) continue;
       push({ at: at(d, prefs.digest), kind: 'digest', title: `Votre journée · ${fmt(d, { weekday: 'long', day: 'numeric' })}`, body: parts.join(' · '), tag: 'digest', url: '#/', urgent: false });
+    }
+  }
+
+  // Espace école : séances de travail, cartable, petites questions (+ copies aux parents)
+  if (data.school && (prefs.school || prefs.schoolCopies)) {
+    for (const r of computeSchoolReminders(data.school, memberId, now)) {
+      if (r.copy ? !prefs.schoolCopies : !prefs.school) continue;
+      const { copy: _copy, ...rest } = r;
+      void _copy;
+      push({ ...rest, urgent: false });
     }
   }
 

@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp } from 'lucide-react';
 import type { FamilySettings, Member } from '../lib/engine';
 import { useEngine, useMe } from '../store';
 import { DEFAULT_HOME, MODULES } from '../modules';
-import { ColorPicker, Field, IconBadge, Page } from '../ui';
+import { ColorPicker, Field, FieldGroup, IconBadge, Page } from '../ui';
 import { MemberForm } from './Family';
 
 export const DEFAULT_ACCENT = '#8E5CE6';
@@ -39,9 +39,9 @@ export function SettingsPage() {
         <Field label="Nom de la famille">
           <input value={name} onChange={(e) => setName(e.target.value)} onBlur={() => name.trim() && name !== me.family.name && save({ name })} />
         </Field>
-        <Field label="Couleur de l'appli">
+        <FieldGroup label="Couleur de l'appli">
           <ColorPicker value={settings.accent ?? DEFAULT_ACCENT} onChange={(accent) => save({ settings: { accent } })} />
-        </Field>
+        </FieldGroup>
       </div>
 
       <h3 className="apps-title">Accueil</h3>

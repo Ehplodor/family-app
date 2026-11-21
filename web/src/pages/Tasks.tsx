@@ -3,7 +3,7 @@ import { Check, Repeat as RepeatIcon } from 'lucide-react';
 import { useCollection, useMe, useMembers } from '../store';
 import { relativeDay, today } from '../dates';
 import { nextDue, type TaskRepeat } from '../lib/recurrence';
-import { Avatar, Empty, Fab, Field, MemberChips, Page, Sheet, confirmDelete } from '../ui';
+import { Avatar, Empty, Fab, Field, FieldGroup, MemberChips, Page, Sheet, confirmDelete } from '../ui';
 import type { Doc } from '../store';
 
 export type { TaskRepeat };
@@ -180,14 +180,14 @@ function TaskForm({ initial, onSubmit, onDelete }: { initial?: Task; onSubmit: (
           </select>
         </Field>
       </div>
-      <Field label="Pour qui ?">
+      <FieldGroup label="Pour qui ?">
         <MemberChips
           members={members}
           multiple={false}
           value={t.assigneeId ? [t.assigneeId] : []}
           onChange={(ids) => set({ assigneeId: ids[0] ?? null })}
         />
-      </Field>
+      </FieldGroup>
       <div className="form-actions">
         {onDelete && (
           <button type="button" className="btn danger" onClick={onDelete}>

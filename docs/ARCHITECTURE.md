@@ -177,6 +177,10 @@ avec la clé du cercle.
 | **Tâche confiée** | Immédiat | La personne assignée | Respectées |
 | Nouvelles **photos** | Regroupées | Les autres membres | Respectées |
 | 🔐 **Nouvel appareil dans le cercle** | Immédiat | Tous les appareils | **Toujours envoyée** |
+| 🏫 **Travail du jour** (école) | Heure des devoirs (17:30, ou 10:30 les jours sans cours l'après-midi) | L'enfant ; copie facultative aux parents, éventuellement « 1 h après, si pas fait » | Respectées, et jamais pendant un cours |
+| 🎒 **Cartable de la veille** | 19:30 : cours du lendemain, contrôles, choses à prévoir | L'enfant (+ copie) | Respectées |
+| 🧠 **Petite question** | 1 à 3 par jour (7:45, 18:45…) avec le bouton « Voir la réponse » | L'enfant seulement par défaut | Respectées, et jamais pendant un cours |
+| 🏫 Devoir ajouté par un parent | Immédiat | L'enfant | Respectées |
 
 ### Fonctionnement technique
 
@@ -199,6 +203,58 @@ avec la clé du cercle.
   installée est séparé de celui de Safari : il faut rejoindre le cercle **depuis l'appli installée**, avec le
   scanner de QR intégré ou en collant le lien.
 
+## Espace École : rappels « intelligents »
+
+Toute la logique est dans `web/src/lib/school.ts` (fonctions pures, testées dans `school.test.ts`).
+
+### Ne pas tout faire au dernier moment
+
+Chaque élément du cahier de textes a un **temps de travail estimé** (20 min pour un devoir, 1 h de révision
+pour un contrôle, 2 h pour un exposé, modifiables). Ce temps est **découpé en séances courtes** (20 min par défaut),
+réparties **avant l'échéance** :
+
+| Type | Placement des séances | Pourquoi |
+| --- | --- | --- |
+| Devoir | Le plus tôt possible | Prendre l'habitude de faire le travail le jour où il est donné |
+| Exposé / projet | Étalé régulièrement jusqu'à la veille | Éviter le rush final |
+| Contrôle | J-1, J-3, J-6, J-10… | **Révisions espacées** : on retient bien mieux en révisant plusieurs fois qu'une seule fois la veille |
+| Leçon à apprendre | Le jour même, puis la veille du cours | Apprendre puis se rappeler, le lendemain ou plus tard |
+
+- Le planning respecte une **charge maximale par jour** (45 min en semaine, 60 le mercredi, réglables) et traite
+  d'abord les échéances les plus proches.
+- Il se **recalcule en continu** : quand l'enfant appuie sur « Fait », le reste est replanifié. Si une séance est
+  ratée, elle est reportée sur les jours suivants. S'il n'y a plus assez de temps, la notification passe en
+  « ⏰ il est temps ».
+- **L'emploi du temps sert partout :**
+  - proposer la date « prochain cours de Maths » ;
+  - préparer le cartable de la veille ;
+  - choisir l'heure des devoirs (le mercredi après-midi est libre) ;
+  - **ne jamais envoyer de notification pendant un cours**.
+
+  Les semaines A/B sont gérées.
+
+### Apprendre ses leçons sans s'en rendre compte
+
+- Une leçon se saisit en quelques lignes `question = réponse`.
+- **Répétition espacée (boîtes de Leitner) :** une bonne réponse fait passer la question dans la boîte suivante et
+  l'espace davantage (1, 2, 4, 8 puis 16 jours). Une erreur la ramène au lendemain.
+- **Une ou deux questions par jour arrivent en notification**, à des moments creux (petit-déjeuner, après
+  l'école). Sur Android, le bouton « Voir la réponse » l'affiche sans ouvrir l'appli : 10 secondes, sans effort.
+- **Avant un contrôle**, les questions des leçons concernées passent en priorité pendant les 5 jours précédents.
+- L'onglet *Révisions* propose aussi une série de 10 questions.
+
+### Copie aux parents (facultative)
+
+Elle se règle par enfant, dans *École → Réglages* :
+
+- quels parents la reçoivent (tous par défaut) ;
+- quels rappels (travail du jour, cartable, petites questions) ;
+- quand : en même temps, ou **30 min, 1 h ou 2 h après, seulement si ce n'est pas fait**.
+
+La copie disparaît d'elle-même dès que l'enfant note son travail comme fait, car les rappels sont recalculés à
+chaque modification. Pour un enfant sans téléphone, la copie est le moyen de recevoir ses rappels. Chaque parent
+peut aussi couper toutes les copies dans ses réglages de rappels.
+
 ## Pistes d'évolution
 
 - Verrouillage de l'appli par code PIN ou biométrie (WebAuthn), avec chiffrement local de la base.
@@ -206,3 +262,5 @@ avec la clé du cercle.
 - Signature des opérations par appareil, pour se protéger d'un membre malveillant.
 - Pièces jointes dans les messages, documents (passeports, carnets de santé) avec rappels d'expiration.
 - Export iCal de l'agenda (lecture seule, chiffrement à préserver).
+- École : enregistrer « je savais / à revoir » directement depuis la notification ; import de l'emploi du temps
+  depuis l'ENT (Pronote, EcoleDirecte…) si un export est disponible ; statistiques de régularité pour l'enfant.

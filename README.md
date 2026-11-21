@@ -19,7 +19,8 @@ cercle familial **chiffrées de bout en bout**. Elle se publie sur **GitHub Page
   de 5 émojis, alerte « nouvel appareil » envoyée à toute la famille.
 - **Téléphone perdu** : on retire l'appareil, une nouvelle clé est transmise aux seuls appareils restants.
 - **Rappels, même appli fermée** : rendez-vous, résumé du matin, anniversaires (J-7 et jour J), tâches (et
-  relances), repas du lendemain, planning de la semaine, messages, listes… Les rappels sont ciblés sur les
+  relances), repas du lendemain, planning de la semaine, messages, listes, et pour les enfants : travail du jour,
+  cartable, petites questions de révision… Les rappels sont ciblés sur les
   personnes concernées, respectent les heures calmes et sont regroupés. **Leur contenu est chiffré** : le relais ne
   connaît que l'heure d'envoi.
 - **Sauvegarde chiffrée** par phrase secrète, à garder hors du téléphone.
@@ -34,6 +35,7 @@ cercle familial **chiffrées de bout en bout**. Elle se publie sur **GitHub Page
 | Galerie | Photos réduites puis chiffrées avant l'envoi |
 | Anniversaires | Triés par date à venir, âge, idées cadeaux |
 | Repas / Recettes | Planning de la semaine lié aux recettes, **génère la liste de courses** |
+| **École** | Par enfant : emploi du temps (semaines A/B), cahier de textes (devoirs, contrôles, leçons, exposés, choses à prévoir), **planification automatique en courtes séances avant l'échéance**, révisions espacées avant les contrôles, **leçons en questions/réponses apprises par petites notifications quotidiennes**, cartable de la veille, copie facultative des rappels aux parents |
 | Tâches | Ponctuelles ou récurrentes, assignées, avec une heure optionnelle |
 | Budget | Dépenses et entrées par mois, par catégorie |
 | Rappels | Notifications de l'appareil, préférences par membre, heures calmes, aperçu des prochains rappels |
@@ -106,7 +108,7 @@ Pour tester le service worker, les notifications et le hors ligne, construisez l
 
 | Commande | Rôle |
 | --- | --- |
-| `npm test` | Tests unitaires : fusion des données (CRDT), cryptographie, calcul des rappels |
+| `npm test` | Tests unitaires : fusion des données (CRDT), cryptographie, calcul des rappels, planification école |
 | `npm run relay:test` | Tests d'intégration du relais : authentification, synchro, Web Push déchiffré par une implémentation de référence, invitations (relais local lancé) |
 | `npm run typecheck` | Vérification TypeScript |
 | `npm run build` | Construit l'appli et le service worker dans `dist/` |
@@ -122,6 +124,7 @@ web/src/
     engine.ts      cercle, appareils, renouvellement de clé, photos, sauvegardes
     invite.ts      invitation avec approbation
     reminders.ts   calcul des rappels (fonction pure, testée)
+    school.ts      espace école : planification des séances, répétition espacée, rappels enfant/parents
     notify.ts      abonnement push, envoi des rappels et de l'activité
     idb.ts         stockage IndexedDB
   sw.ts            service worker : hors ligne + déchiffrement des notifications

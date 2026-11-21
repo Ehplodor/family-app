@@ -2,10 +2,11 @@ import { useMemo, useState } from 'react';
 import { Cake, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useCollection, useMembers } from '../store';
 import { addMonths, capitalize, fmt, parseISODate, startOfWeek, addDays, toISODate, today } from '../dates';
-import { Avatar, Empty, Fab, Field, MemberChips, Page, Sheet, confirmDelete } from '../ui';
+import { Avatar, Empty, Fab, Field, FieldGroup, MemberChips, Page, Sheet, confirmDelete } from '../ui';
 import type { Doc, Member } from '../store';
 import type { Birthday } from './Birthdays';
 import { occursOn, type Repeat } from '../lib/recurrence';
+import { KIND_EMOJI, KIND_LABEL, type Homework } from '../lib/school';
 
 export type { Repeat };
 export type CalEvent = {
@@ -38,6 +39,7 @@ export { occursOn };
 export function useDayAgenda() {
   const { docs: events } = useCollection<CalEvent>('events');
   const { docs: birthdays } = useCollection<Birthday>('birthdays');
+  const { docs: homework } = useCollection<Homework>('homework');
   const { byId } = useMembers();
   return useMemo(
     () =>
@@ -66,9 +68,21 @@ export function useDayAgenda() {
               event: e,
             };
           });
-        return [...bdays, ...evs];
+        const school: Occurrence[] = homework
+          .filter((h) => h.due === iso && !h.done && (h.kind === 'controle' || h.kind === 'expose' || h.kind === 'prevoir'))
+          .map((h) => {
+            const child = byId(h.childId);
+            return {
+              key: `hw-${h.id}`,
+              title: `${KIND_EMOJI[h.kind]} ${h.kind === 'prevoir' ? h.title : `${KIND_LABEL[h.kind]} de ${h.subject}`}${child ? ` (${child.name})` : ''}`,
+              time: '🏫',
+              color: child?.color ?? '#E5484D',
+              members: child ? [child] : [],
+            };
+          });
+        return [...bdays, ...school, ...evs];
       },
-    [events, birthdays, byId],
+    [events, birthdays, homework, byId],
   );
 }
 
@@ -267,9 +281,9 @@ function EventForm({
           <input type="date" min={ev.date} value={ev.endDate ?? ''} onChange={(e) => set({ endDate: e.target.value })} />
         </Field>
       )}
-      <Field label="Qui ?">
+      <FieldGroup label="Qui ?">
         <MemberChips members={members} value={ev.memberIds} onChange={(memberIds) => set({ memberIds })} />
-      </Field>
+      </FieldGroup>
       <Field label="Rappel">
         <select
           value={ev.reminder === undefined || ev.reminder === -1 ? 'default' : ev.reminder === null ? 'none' : String(ev.reminder)}

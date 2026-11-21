@@ -14,7 +14,7 @@ import type { Doc } from './lib/replica';
 import type { SyncStatus } from './lib/sync';
 
 export type { Doc } from './lib/replica';
-export type Member = { id: string; name: string; color: string };
+export type Member = { id: string; name: string; color: string; kind?: 'child' | 'adult' };
 export type Me = { member: Member; family: { name: string; settings: Omit<FamilySettings, 'name'> }; members: Member[] };
 
 /* ------------------------------------------------------------------ Contexte */
@@ -142,7 +142,7 @@ export function useMe(): Me {
   const members = useCollection<MemberData>('members').docs;
   const settings = useDoc<FamilySettings>('settings', 'family');
   return useMemo(() => {
-    const list = members.map((m) => ({ id: m.id, name: m.name, color: m.color }));
+    const list = members.map((m) => ({ id: m.id, name: m.name, color: m.color, kind: m.kind }));
     const member = list.find((m) => m.id === engine.memberId) ?? { id: engine.memberId ?? '', name: '?', color: '#999999' };
     const { name = 'Ma famille', ...rest } = settings ?? ({} as Partial<FamilySettings>);
     return { member, members: list, family: { name, settings: rest } };

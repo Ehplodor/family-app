@@ -21,7 +21,7 @@ export type Identity = { deviceId: string; privateKey: CryptoKey; publicJwk: Jso
 /** Ce qui est stocké localement pour le cercle (lu aussi par le service worker). */
 export type StoredCircle = CircleKeys & { secret: Uint8Array };
 
-export type Member = { name: string; color: string };
+export type Member = { name: string; color: string; kind?: 'child' | 'adult' };
 export type Device = { memberId: string; label: string; pub: JsonWebKey; push?: boolean; revoked?: boolean };
 export type FamilySettings = { name: string; accent?: string; homeModules?: string[] };
 type Rotation = { from: string; envelopes: Record<string, string>; by: string };

@@ -13,7 +13,7 @@ import type { Op } from './replica';
 import { computeReminders, DEFAULT_PREFS, outOfQuietHours, type NotifPrefs, type ReminderData } from './reminders';
 import { RELAY_URL, relayFetch } from './sync';
 
-export type PushPayload = { title: string; body: string; tag: string; url: string; kind: string; snooze?: boolean };
+export type PushPayload = { title: string; body: string; tag: string; url: string; kind: string; snooze?: boolean; answer?: string };
 type QueueItem = { device: string; at: number; payload: string; topic?: string; urgent?: boolean };
 
 export const pushSupported = () =>
@@ -32,6 +32,9 @@ async function topicOf(tag: string) {
   return [...h.slice(0, 12)].map((b) => b.toString(36).padStart(2, '0')).join('').slice(0, 24);
 }
 
+/** Collections dont dépendent les rappels planifiés. */
+const SCHEDULE_SOURCES = ['events', 'birthdays', 'tasks', 'meals', 'members', 'schoolProfiles', 'timetable', 'homework', 'cards'];
+
 export class Notifier {
   private uploaded = new Map<string, string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -41,7 +44,7 @@ export class Notifier {
 
   constructor(private engine: Engine) {
     engine.replica.onChange((cols, local) => {
-      if (cols.has('devices') || cols.has('prefs') || ['events', 'birthdays', 'tasks', 'meals'].some((c) => cols.has(c))) {
+      if (cols.has('devices') || cols.has('prefs') || SCHEDULE_SOURCES.some((c) => cols.has(c))) {
         this.scheduleUpload(local);
       }
     });
@@ -158,6 +161,13 @@ export class Notifier {
       birthdays: r.list('birthdays'),
       tasks: r.list('tasks'),
       meals: r.list('meals'),
+      school: {
+        members: r.list('members'),
+        profiles: r.list('schoolProfiles'),
+        slots: r.list('timetable'),
+        homework: r.list('homework'),
+        cards: r.list('cards'),
+      },
     } as unknown as ReminderData;
   }
 
@@ -177,7 +187,7 @@ export class Notifier {
           at: r.at,
           topic: await topicOf(r.tag),
           urgent: r.urgent,
-          payload: await this.encrypt({ title: r.title, body: r.body, tag: r.tag, url: r.url, kind: r.kind, snooze: true }),
+          payload: await this.encrypt({ title: r.title, body: r.body, tag: r.tag, url: r.url, kind: r.kind, snooze: r.kind !== 'quiz', answer: r.answer }),
         });
       }
       await relayFetch(this.circle, `/schedule/${d.id}`, {
@@ -280,6 +290,14 @@ export class Notifier {
         this.queueActivity(`task-${op.i}`, () => ({
           payload: { title: '✅ Nouvelle tâche pour vous', body: `${task?.title ?? ''} (de la part de ${me})`, tag: `taskassign-${op.i}`, url: '#/m/tasks', kind: 'task' },
           targets: this.targets((mid, p) => p.tasks && mid === assignee),
+        }));
+      } else if (op.c === 'homework' && isNew && op.f?.childId && op.f.childId !== this.engine.memberId) {
+        const childId = String(op.f.childId);
+        const title = String(op.f.title ?? '');
+        const subject = String(op.f.subject ?? '');
+        this.queueActivity(`hw-${op.i}`, () => ({
+          payload: { title: `🏫 Nouveau dans ton cahier de textes`, body: `${subject} : ${title} (ajouté par ${me})`, tag: `hwnew-${op.i}`, url: `#/m/school/${childId}`, kind: 'school' },
+          targets: this.targets((mid, p) => p.school && mid === childId),
         }));
       } else if (op.c === 'devices' && isNew) {
         // Alerte de sécurité : toujours envoyée, même pendant les heures calmes.

@@ -123,6 +123,16 @@ export function NotificationsPage() {
         <Toggle label="Tâches" hint="À l'échéance, puis une relance si elle est en retard" checked={prefs.tasks} onChange={(v) => set({ tasks: v })} />
         <Toggle label="Repas du lendemain" hint="La veille au soir (courses, décongélation…)" checked={prefs.meals} onChange={(v) => set({ meals: v })} />
         <Toggle label="Planning de la semaine" hint="Le dimanche si les repas ne sont pas prévus" checked={prefs.weeklyPlanning} onChange={(v) => set({ weeklyPlanning: v })} />
+        {me.member.kind === 'child' ? (
+          <Toggle label="École" hint="Travail du jour, cartable, petites questions" checked={prefs.school} onChange={(v) => set({ school: v })} />
+        ) : (
+          <Toggle
+            label="École de mes enfants"
+            hint="Copies des rappels des enfants (réglables dans École → Réglages)"
+            checked={prefs.schoolCopies}
+            onChange={(v) => set({ schoolCopies: v })}
+          />
+        )}
       </ul>
 
       <h3 className="apps-title">Activité de la famille</h3>

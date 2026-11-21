@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { Check, ListChecks, Pencil, Trash2, X } from 'lucide-react';
 import { useCollection, useMe, useMembers } from '../store';
 import { navigate, goBack } from '../router';
-import { ColorPicker, Empty, Fab, Field, Page, Sheet, confirmDelete } from '../ui';
+import { ColorPicker, Empty, Fab, Field, FieldGroup, Page, Sheet, confirmDelete } from '../ui';
 
 export type List = { name: string; color: string };
 export type ListItem = { listId: string; text: string; done: boolean; doneBy?: string | null };
@@ -38,9 +38,9 @@ function ListForm({ initial, onSubmit }: { initial?: List; onSubmit: (l: List) =
       <Field label="Nom">
         <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Courses, À faire, Vacances…" />
       </Field>
-      <Field label="Couleur">
+      <FieldGroup label="Couleur">
         <ColorPicker value={color} onChange={setColor} />
-      </Field>
+      </FieldGroup>
       <button className="btn primary" disabled={!name.trim()}>
         Enregistrer
       </button>

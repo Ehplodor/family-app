@@ -4,6 +4,7 @@ import {
   CalendarDays,
   Camera,
   Contact,
+  GraduationCap,
   CookingPot,
   ListChecks,
   MessageSquareText,
@@ -24,6 +25,7 @@ import { MealsPage, MealsSummary } from './pages/Meals';
 import { RecipesPage, RecipesSummary } from './pages/Recipes';
 import { TasksPage, TasksSummary } from './pages/Tasks';
 import { BudgetPage, BudgetSummary } from './pages/Budget';
+import { SchoolPage, SchoolSummary } from './pages/school/School';
 
 export type ModuleDef = {
   id: string;
@@ -48,6 +50,7 @@ export const MODULES: ModuleDef[] = [
   { id: 'family', title: 'Ma Famille', icon: Users, color: '#2F80ED', section: 'Essentiels', Page: FamilyPage, Summary: FamilySummary },
   { id: 'contacts', title: 'Contacts', icon: Contact, color: '#A36BE0', section: 'Essentiels', Page: ContactsPage, Summary: ContactsSummary },
   { id: 'gallery', title: 'Galerie', icon: Camera, color: '#E2A400', section: 'Essentiels', Page: GalleryPage, Summary: GallerySummary },
+  { id: 'school', title: 'École', icon: GraduationCap, color: '#E5484D', section: 'Organisation', Page: SchoolPage, Summary: SchoolSummary },
   { id: 'birthdays', title: 'Anniversaires', icon: Cake, color: '#F2784B', section: 'Organisation', Page: BirthdaysPage, Summary: BirthdaysSummary },
   { id: 'meals', title: 'Repas', icon: UtensilsCrossed, color: '#4F6BED', section: 'Organisation', Page: MealsPage, Summary: MealsSummary },
   { id: 'recipes', title: 'Recettes', icon: CookingPot, color: '#F2994A', section: 'Organisation', Page: RecipesPage, Summary: RecipesSummary },
@@ -55,6 +58,6 @@ export const MODULES: ModuleDef[] = [
   { id: 'budget', title: 'Budget', icon: PiggyBank, color: '#30A46C', section: 'Organisation', Page: BudgetPage, Summary: BudgetSummary },
 ];
 
-export const DEFAULT_HOME = ['lists', 'calendar', 'birthdays', 'messages', 'family', 'tasks', 'meals', 'gallery'];
+export const DEFAULT_HOME = ['lists', 'calendar', 'school', 'birthdays', 'messages', 'family', 'tasks', 'meals', 'gallery'];
 
 export const moduleById = (id: string) => MODULES.find((m) => m.id === id);

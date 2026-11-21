@@ -3,7 +3,7 @@ import { Bell, ShieldCheck, UserPlus } from 'lucide-react';
 import type { Device, Member as MemberData } from '../lib/engine';
 import { useCollection, useEngine, useMe, type Member } from '../store';
 import { navigate } from '../router';
-import { Avatar, ColorPicker, Fab, Field, Page, Sheet, PALETTE } from '../ui';
+import { Avatar, ColorPicker, Fab, Field, FieldGroup, Page, Sheet, PALETTE } from '../ui';
 import { InvitePanel } from './Invite';
 
 export function FamilySummary() {
@@ -25,7 +25,7 @@ export function FamilyPage() {
 
   const activeDevices = (memberId: string) => devices.filter((d) => d.memberId === memberId && !d.revoked);
 
-  const save = async (m: { name: string; color: string }) => {
+  const save = async (m: { name: string; color: string; kind?: 'child' | 'adult' }) => {
     if (editing === 'new') await engine.replica.create<MemberData>('members', m);
     else if (editing) await engine.replica.update<MemberData>('members', editing.id, m);
     setEditing(null);
@@ -63,6 +63,7 @@ export function FamilyPage() {
                 <strong>{m.name}</strong>
                 <small>
                   {m.id === me.member.id ? "C'est vous · " : ''}
+                  {m.kind === 'child' ? 'Enfant · ' : ''}
                   {n ? `${n} appareil${n > 1 ? 's' : ''}` : 'Sans appareil'}
                 </small>
               </span>
@@ -107,28 +108,33 @@ export function MemberForm({
   onSubmit,
   onDelete,
 }: {
-  initial?: { name: string; color: string };
+  initial?: { name: string; color: string; kind?: 'child' | 'adult' };
   hint?: string;
-  onSubmit: (m: { name: string; color: string }) => void;
+  onSubmit: (m: { name: string; color: string; kind: 'child' | 'adult' }) => void;
   onDelete?: () => void;
 }) {
   const [name, setName] = useState(initial?.name ?? '');
   const [color, setColor] = useState(initial?.color ?? PALETTE[Math.floor(Math.random() * PALETTE.length)]);
+  const [child, setChild] = useState(initial?.kind === 'child');
   return (
     <form
       className="form"
       onSubmit={(e) => {
         e.preventDefault();
-        if (name.trim()) onSubmit({ name: name.trim(), color });
+        if (name.trim()) onSubmit({ name: name.trim(), color, kind: child ? 'child' : 'adult' });
       }}
     >
       {hint && <p className="muted">{hint}</p>}
       <Field label="Prénom">
         <input autoFocus={!initial} value={name} onChange={(e) => setName(e.target.value)} maxLength={40} />
       </Field>
-      <Field label="Couleur">
+      <FieldGroup label="Couleur">
         <ColorPicker value={color} onChange={setColor} />
-      </Field>
+      </FieldGroup>
+      <label className="toggle">
+        <input type="checkbox" checked={child} onChange={(e) => setChild(e.target.checked)} />
+        Enfant (active son espace École)
+      </label>
       <div className="form-actions">
         {onDelete && (
           <button type="button" className="btn danger" onClick={onDelete}>

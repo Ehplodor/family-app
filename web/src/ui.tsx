@@ -100,6 +100,16 @@ export function Field({ label, children }: { label: string; children: ReactNode 
   );
 }
 
+/** Groupe de boutons (couleurs, membres…) : pas de <label>, qui capterait le premier bouton. */
+export function FieldGroup({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="field" role="group" aria-label={label}>
+      <span>{label}</span>
+      {children}
+    </div>
+  );
+}
+
 export function Empty({ icon, children }: { icon?: ReactNode; children: ReactNode }) {
   return (
     <div className="empty">

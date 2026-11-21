@@ -5,7 +5,7 @@ import { parseInviteLink } from '../lib/invite';
 import { RELAY_URL } from '../lib/sync';
 import type { Member } from '../lib/engine';
 import { useCollection, useEngine, useSyncStatus } from '../store';
-import { ColorPicker, Field, PALETTE } from '../ui';
+import { ColorPicker, Field, FieldGroup, PALETTE } from '../ui';
 import { JoinWaiting } from './Join';
 import { Scanner } from './Scanner';
 
@@ -86,9 +86,9 @@ export function Onboarding() {
           <Field label="Votre prénom">
             <input value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
-          <Field label="Votre couleur">
+          <FieldGroup label="Votre couleur">
             <ColorPicker value={color} onChange={setColor} />
-          </Field>
+          </FieldGroup>
           {error && <p className="error">{error}</p>}
           <button className="btn primary" disabled={busy || !familyName.trim() || !name.trim()}>
             C'est parti
@@ -173,9 +173,9 @@ export function ChooseMember() {
         <Field label="Votre prénom">
           <input value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
-        <Field label="Votre couleur">
+        <FieldGroup label="Votre couleur">
           <ColorPicker value={color} onChange={setColor} />
-        </Field>
+        </FieldGroup>
         <button
           className="btn primary"
           disabled={!name.trim()}

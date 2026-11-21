@@ -1217,3 +1217,95 @@ hr {
   border-top: 1px solid var(--border);
   width: 100%;
 }
+
+/* ---------- École ---------- */
+.tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  margin: 0 -16px;
+  padding: 0 16px 4px;
+}
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+.tabs button {
+  flex: none;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--muted);
+}
+.tabs button.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.plain {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.session,
+.row-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+.session + .session {
+  border-top: 1px solid var(--border);
+}
+.quiz {
+  border-width: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.quiz-q {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+.quiz-a {
+  font-size: 20px;
+  margin: 0;
+  padding: 12px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--pos) 14%, transparent);
+}
+.slot-time {
+  width: 46px;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.item.faded {
+  opacity: 0.45;
+}
+.capacity {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+.capacity label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.capacity input {
+  padding: 8px 2px;
+  text-align: center;
+}
+.inline-time {
+  width: auto;
+  padding: 6px 10px;
+}
+.child-picker {
+  margin-bottom: 4px;
+}

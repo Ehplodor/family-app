@@ -97,7 +97,9 @@ self.addEventListener('push', (event) => {
         data: { url: p?.url ?? '#/', raw, tag: p?.tag },
         renotify: !!p?.tag,
       };
-      if (p?.snooze) options.actions = [{ action: 'snooze', title: 'Rappeler dans 1 h' }];
+      if (p?.answer) options.actions = [{ action: 'reveal', title: 'Voir la réponse' }];
+      else if (p?.snooze) options.actions = [{ action: 'snooze', title: 'Rappeler dans 1 h' }];
+      if (p?.answer) (options.data as Record<string, unknown>).answer = p.answer;
       await self.registration.showNotification(title, options);
     })(),
   );
@@ -106,7 +108,20 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   const n = event.notification;
   n.close();
-  const { url, raw, tag } = (n.data ?? {}) as { url?: string; raw?: string; tag?: string };
+  const { url, raw, tag, answer } = (n.data ?? {}) as { url?: string; raw?: string; tag?: string; answer?: string };
+  // Petite question : la réponse s'affiche sans ouvrir l'appli (Android). Toucher la réponse
+  // ouvre l'appli pour indiquer « je savais » ou « à revoir ».
+  if (event.action === 'reveal' && answer) {
+    event.waitUntil(
+      self.registration.showNotification(`💡 ${n.body}`, {
+        body: answer,
+        tag,
+        icon: new URL('icon-192.png', scope()).href,
+        data: { url },
+      }),
+    );
+    return;
+  }
   if (event.action === 'snooze' && raw) {
     event.waitUntil(
       (async () => {
