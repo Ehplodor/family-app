@@ -8,7 +8,7 @@
  *  - chaque rappel a une étiquette (tag) : une nouvelle version remplace l'ancienne au lieu de s'empiler.
  */
 import { addDays, fmt, parseISODate, toISODate } from '../dates';
-import { occursOn, type Repeat, type TaskRepeat } from './recurrence';
+import { occursOn, spanPart, type Repeat, type TaskRepeat } from './recurrence';
 import { computeSchoolReminders, type SchoolData } from './school';
 
 export type NotifPrefs = {
@@ -131,8 +131,9 @@ export function computeReminders(data: ReminderData, memberId: string, prefs: No
       if (lead === null || lead < 0) continue;
       for (const d of days) {
         if (!occursOn(ev, d)) continue;
+        const part = spanPart(ev, d);
+        if (part === 'middle' || part === 'last') continue; // une seule fois pour plusieurs jours
         if (ev.allDay || !ev.start) {
-          if (ev.endDate && d !== ev.date && (ev.repeat ?? 'none') === 'none') continue; // une seule fois pour plusieurs jours
           push({ at: at(d, prefs.allDayHour), kind: 'event', title: ev.title, body: "Aujourd'hui", tag: `ev-${ev.id}-${d}`, url: '#/m/calendar', urgent: false });
         } else {
           const startTs = at(d, ev.start);
@@ -226,7 +227,7 @@ export function computeReminders(data: ReminderData, memberId: string, prefs: No
     for (const d of days) {
       const parts: string[] = [];
       const evs = data.events.filter((e) => involves(e.memberIds, memberId) && occursOn(e, d));
-      if (evs.length) parts.push(evs.length === 1 ? `📅 ${evs[0].title}${evs[0].start && !evs[0].allDay ? ` à ${evs[0].start}` : ''}` : `📅 ${evs.length} événements`);
+      if (evs.length) parts.push(evs.length === 1 ? `📅 ${evs[0].title}${evs[0].start && !evs[0].allDay && !['middle', 'last'].includes(spanPart(evs[0], d) ?? '') ? ` à ${evs[0].start}` : ''}` : `📅 ${evs.length} événements`);
       const tasks = data.tasks.filter((t) => !t.done && t.due <= d && (!t.assigneeId || t.assigneeId === memberId));
       if (d === days[0] ? tasks.length : tasks.filter((t) => t.due === d).length) {
         const n = d === days[0] ? tasks.length : tasks.filter((t) => t.due === d).length;
