@@ -1332,3 +1332,125 @@ hr {
 .prose ul {
   padding-left: 20px;
 }
+
+/* ------------------------------------------------------------------ Réveils */
+.alarm-time {
+  font-size: 30px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.alarm-time-input {
+  font-size: 28px;
+}
+.alarm-help summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+input.switch {
+  width: 24px;
+  height: 24px;
+}
+.ring-screen,
+.bedside {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  color: #fff;
+  background: #1b1b2b;
+  user-select: none;
+  touch-action: none;
+}
+/* Aube : du bleu nuit vers l'orangé, au rythme de --dawn (0 → 1 en une minute). */
+.ring-screen.gentle {
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, #e0752f calc(var(--dawn) * 100%), #1b1b2b),
+    color-mix(in srgb, #c9824e calc(var(--dawn) * 90%), #101020)
+  );
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+}
+.ring-snooze {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.ring-clock,
+.bedside-clock {
+  font-size: min(26vw, 140px);
+  font-weight: 300;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.ring-label {
+  font-size: 24px;
+  font-weight: 600;
+}
+.ring-hint,
+.bedside-hint {
+  opacity: 0.75;
+  font-size: 15px;
+  text-align: center;
+  padding: 0 16px;
+}
+.ring-swipe {
+  height: 32vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-bottom: calc(28px + env(safe-area-inset-bottom));
+  background: rgba(0, 0, 0, 0.18);
+  font-size: 16px;
+}
+.ring-knob {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 32px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #1b1b2b;
+}
+.ring-challenge {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px 16px;
+  max-width: 480px;
+  width: 100%;
+  margin: 0 auto;
+  touch-action: auto;
+}
+.ring-prompt {
+  font-size: 34px;
+  font-weight: 600;
+  text-align: center;
+  margin: 0;
+}
+.ring-challenge input {
+  font-size: 26px;
+  text-align: center;
+}
+.bedside {
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  background: #000;
+  color: #8a6a4a;
+}
+.bedside-next {
+  font-size: 18px;
+}

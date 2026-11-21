@@ -38,6 +38,7 @@ cercle familial **chiffrées de bout en bout**. Elle se publie sur **GitHub Page
 | **École** | Par enfant : emploi du temps (semaines A/B), cahier de textes (devoirs, contrôles, leçons, exposés, choses à prévoir), **planification automatique en courtes séances avant l'échéance**, révisions espacées avant les contrôles, **leçons en questions/réponses apprises par petites notifications quotidiennes**, cartable de la veille, copie facultative des rappels aux parents |
 | Tâches | Ponctuelles ou récurrentes, assignées, avec une heure optionnelle |
 | Budget | Dépenses et entrées par mois, par catégorie |
+| **Réveils** | Propres à chaque appareil (transférables, jamais partagés), répétition d'un toucher, glisser pour arrêter, défis (calcul, mots à recopier), réveil en douceur, mode chevet. Appli fermée : notification + 2 relances (pas de sonnerie continue, voir l'architecture) |
 | Rappels | Notifications de l'appareil, préférences par membre, heures calmes, aperçu des prochains rappels |
 | Sécurité | Appareils, retrait d'un appareil, code du cercle, sauvegarde, effacement |
 | Personnaliser | Tuiles de l'accueil, ordre, couleur, nom de la famille |

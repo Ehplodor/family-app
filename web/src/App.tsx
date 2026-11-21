@@ -11,6 +11,7 @@ import { ChooseMember, Onboarding } from './pages/Onboarding';
 import { SecurityPage } from './pages/Security';
 import { NotificationsPage } from './pages/Notifications';
 import { AboutPage } from './pages/About';
+import { AlarmWatcher } from './pages/Alarms';
 
 function BottomNav({ active }: { active: 'home' | 'apps' }) {
   return (
@@ -115,7 +116,12 @@ function Gate() {
   if (state === 'setup') return <Onboarding />;
   if (state === 'choose-member') return <ChooseMember />;
   if (state === 'removed') return <Removed />;
-  return <Shell />;
+  return (
+    <>
+      <AlarmWatcher />
+      <Shell />
+    </>
+  );
 }
 
 export function App() {
