@@ -9,7 +9,7 @@ import type { DocRecord, Op, Replica } from './replica';
 
 export const RELAY_URL: string = (import.meta.env.VITE_RELAY_URL ?? '').replace(/\/$/, '');
 
-export type SyncStatus = 'local' | 'connecting' | 'online' | 'offline' | 'denied' | 'closed';
+export type SyncStatus = 'local' | 'connecting' | 'online' | 'offline' | 'denied' | 'closed' | 'full';
 type Payload = { ops?: Op[]; records?: DocRecord[] };
 
 const MAX_OPS_PER_BATCH = 300;
@@ -216,6 +216,7 @@ export class SyncClient {
         const i = this.inflight.findIndex((f) => f.id === m.id);
         if (i >= 0) this.inflight.splice(i, 1)[0].reject(new Error(m.error));
         if (m.error === 'closed') this.setStatus('closed');
+        if (m.error === 'quota') this.setStatus('full');
         break;
       }
     }

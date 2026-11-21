@@ -169,9 +169,15 @@ export class Engine {
 
   async deleteBlob(id: string) {
     await idb.del('blobs', id);
+    if (this.quotaFull) {
+      this.quotaFull = false;
+      this.emit();
+    }
     if (this.circle && RELAY_URL) await relayFetch(this.circle, `/blobs/${id}`, { method: 'DELETE' }).catch(() => {});
   }
 
+  /** Le relais a refusé une photo faute de place. */
+  quotaFull = false;
   private blobFlushing = false;
   async flushPendingBlobs() {
     if (this.blobFlushing || !this.sync || !RELAY_URL) return;
@@ -184,8 +190,12 @@ export class Engine {
         pending = pending.filter((p) => p !== id);
         await idb.put('kv', 'pendingBlobs', pending);
       }
-    } catch {
-      /* hors ligne : réessai plus tard */
+    } catch (err) {
+      // 507 = espace de la famille plein sur le relais ; sinon hors ligne : réessai plus tard.
+      if (String(err).includes('507') && !this.quotaFull) {
+        this.quotaFull = true;
+        this.emit();
+      }
     } finally {
       this.blobFlushing = false;
     }

@@ -14,6 +14,7 @@ const MAX_BLOB = 1900 * 1024; // une photo chiffrée (réduite par l'appli avant
 const MAX_SCHEDULE = 300; // rappels planifiés par appareil
 const MAX_PAYLOAD = 3000; // contenu chiffré d'une notification
 const CLOSED_RETENTION = 30 * 24 * 3600 * 1000; // après rotation de clé
+const DAY = 86_400_000;
 const DEVICE_RE = /^[0-9a-f]{32}$/;
 const BLOB_RE = /^[0-9a-f]{32}$/;
 
@@ -93,6 +94,37 @@ export class Circle extends DurableObject<Env> {
     if (!(await this.checkToken(token))) throw new HttpError(403, 'Accès refusé');
   }
 
+  private get quotaBytes() {
+    return Number(this.env.CIRCLE_QUOTA_MB || 250) * 1024 * 1024;
+  }
+  private get inactiveMs() {
+    return Number(this.env.INACTIVE_DAYS || 400) * DAY;
+  }
+
+  /** Espace occupé par le cercle (journal, instantané, photos, rappels). */
+  private usedBytes(): number {
+    const q = (sql: string) => this.sql.exec<{ n: number | null }>(sql).one().n ?? 0;
+    return (
+      q('SELECT SUM(LENGTH(data)) AS n FROM log') +
+      q('SELECT SUM(LENGTH(data)) AS n FROM snapshot') +
+      q('SELECT SUM(LENGTH(data)) AS n FROM blobs') +
+      q('SELECT SUM(LENGTH(payload)) AS n FROM queue')
+    );
+  }
+  private checkQuota(extra: number) {
+    if (this.usedBytes() + extra > this.quotaBytes) {
+      throw new HttpError(507, `Espace du cercle plein (${Math.round(this.quotaBytes / 1048576)} Mo). Supprimez des photos.`);
+    }
+  }
+
+  /** Dernière activité (écrite au plus deux fois par jour) : sert à effacer les cercles abandonnés. */
+  private async touch() {
+    const seen = Number(this.meta('seen') ?? 0);
+    if (Date.now() - seen < DAY / 2) return;
+    this.setMeta('seen', String(Date.now()));
+    await this.rescheduleAlarm();
+  }
+
   private notClosed() {
     if (this.meta('closed')) throw new HttpError(410, 'Ce cercle a été fermé (clé renouvelée)');
   }
@@ -100,7 +132,10 @@ export class Circle extends DurableObject<Env> {
   private async rescheduleAlarm() {
     const next = this.sql.exec<{ at: number | null }>('SELECT MIN(at) AS at FROM queue').one().at;
     const closedAt = Number(this.meta('closed') ?? 0);
-    const candidates = [next, closedAt ? closedAt + CLOSED_RETENTION : null].filter((x): x is number => !!x);
+    const seen = Number(this.meta('seen') ?? 0);
+    const candidates = [next, closedAt ? closedAt + CLOSED_RETENTION : null, seen ? seen + this.inactiveMs : null].filter(
+      (x): x is number => !!x,
+    );
     if (candidates.length) await this.ctx.storage.setAlarm(Math.max(Date.now(), Math.min(...candidates)));
     else await this.ctx.storage.deleteAlarm();
   }
@@ -134,8 +169,17 @@ export class Circle extends DurableObject<Env> {
       const { token } = (await request.json()) as { token?: string };
       if (typeof token !== 'string' || token.length < 20) throw new HttpError(400, 'Jeton invalide');
       const stored = this.meta('auth');
-      if (!stored) this.setMeta('auth', await sha256Hex(token));
-      else if (!(await this.checkToken(token))) throw new HttpError(403, 'Accès refusé');
+      if (!stored) {
+        // Nouveau cercle : nombre limité par adresse IP et par jour (anti-abus d'un relais public).
+        const ip = request.headers.get('CF-Connecting-IP') ?? 'inconnue';
+        const day = new Date().toISOString().slice(0, 10);
+        const limiter = this.env.LIMITER.get(this.env.LIMITER.idFromName(await sha256Hex(`${ip}|${day}`)));
+        if (!(await limiter.hit(Number(this.env.NEW_CIRCLES_PER_IP_PER_DAY || 10)))) {
+          throw new HttpError(429, "Trop de nouveaux cercles créés depuis cette connexion aujourd'hui. Réessayez demain.");
+        }
+        this.setMeta('auth', await sha256Hex(token));
+      } else if (!(await this.checkToken(token))) throw new HttpError(403, 'Accès refusé');
+      await this.touch();
       return Response.json({ ok: true, closed: !!this.meta('closed') });
     }
 
@@ -151,6 +195,7 @@ export class Circle extends DurableObject<Env> {
         this.notClosed();
         const data = await request.arrayBuffer();
         if (!data.byteLength || data.byteLength > MAX_BLOB) throw new HttpError(413, 'Fichier trop volumineux');
+        this.checkQuota(data.byteLength);
         this.sql.exec('INSERT OR REPLACE INTO blobs (id, data, at) VALUES (?, ?, ?)', arg, data, Date.now());
         return Response.json({ ok: true });
       }
@@ -287,7 +332,10 @@ export class Circle extends DurableObject<Env> {
 
   async alarm() {
     const closedAt = Number(this.meta('closed') ?? 0);
-    if (closedAt && Date.now() > closedAt + CLOSED_RETENTION) {
+    const seen = Number(this.meta('seen') ?? 0);
+    if ((closedAt && Date.now() > closedAt + CLOSED_RETENTION) || (seen && Date.now() > seen + this.inactiveMs)) {
+      // Cercle fermé ou abandonné : tout est effacé (les données restent sur les appareils).
+      for (const ws of this.ctx.getWebSockets()) ws.close(4001, 'Cercle effacé');
       await this.ctx.storage.deleteAll();
       this.migrate();
       return;
@@ -312,6 +360,7 @@ export class Circle extends DurableObject<Env> {
       if (msg.t !== 'hello' || !(await this.checkToken(msg.token))) return ws.close(4003, 'Accès refusé');
       const device = typeof msg.device === 'string' && DEVICE_RE.test(msg.device) ? msg.device : undefined;
       ws.serializeAttachment({ ok: true, device } satisfies Attachment);
+      await this.touch();
       const since = Number(msg.since) || 0;
       const snap = this.sql.exec<{ seq: number; data: string }>('SELECT seq, data FROM snapshot').toArray()[0];
       let from = since;
@@ -335,6 +384,9 @@ export class Circle extends DurableObject<Env> {
       if (this.meta('closed')) return ws.send(JSON.stringify({ t: 'error', id: msg.id, error: 'closed' }));
       if (typeof msg.data !== 'string' || msg.data.length > MAX_BATCH) {
         return ws.send(JSON.stringify({ t: 'error', id: msg.id, error: 'too_large' }));
+      }
+      if (this.usedBytes() + msg.data.length > this.quotaBytes) {
+        return ws.send(JSON.stringify({ t: 'error', id: msg.id, error: 'quota' }));
       }
       const seq = this.sql
         .exec<{ seq: number }>('INSERT INTO log (device, data, at) VALUES (?, ?, ?) RETURNING seq', att.device ?? '', msg.data, Date.now())

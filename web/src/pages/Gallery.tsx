@@ -75,6 +75,12 @@ export function GalleryPage() {
     >
       <input ref={input} type="file" accept="image/*" multiple hidden onChange={(e) => onFiles(e.target.files)} />
       {error && <p className="error">{error}</p>}
+      {engine.quotaFull && (
+        <p className="banner-info">
+          L'espace de la famille est plein sur le relais : les nouvelles photos restent sur cet appareil. Supprimez d'anciennes photos pour
+          les partager.
+        </p>
+      )}
       {photos.loaded && !sorted.length && <Empty icon={<Camera size={48} />}>Partagez vos photos de famille.</Empty>}
       <div className="gallery">
         {sorted.map((p, i) => (

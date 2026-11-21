@@ -7,6 +7,10 @@ compatibility_date = "2026-10-01"
 ALLOWED_ORIGINS = "*"
 # Contact transmis aux services push (Google, Apple, Mozilla) en cas de problème.
 VAPID_SUBJECT = "mailto:relay@example.invalid"
+# Garde-fous pour un relais ouvert au public :
+NEW_CIRCLES_PER_IP_PER_DAY = "10"   # nouveaux cercles par connexion et par jour
+CIRCLE_QUOTA_MB = "250"             # espace maximum par famille (surtout les photos)
+INACTIVE_DAYS = "400"               # un cercle sans aucune connexion pendant ce délai est effacé du relais
 # VAPID_PUBLIC_KEY et VAPID_PRIVATE_JWK : générés par `npm run vapid`
 # (la clé privée se règle avec `npx wrangler secret put VAPID_PRIVATE_JWK`).
 
@@ -18,6 +22,14 @@ class_name = "Circle"
 name = "INVITE"
 class_name = "Invite"
 
+[[durable_objects.bindings]]
+name = "LIMITER"
+class_name = "Limiter"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Circle", "Invite"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Limiter"]

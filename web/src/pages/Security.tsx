@@ -12,6 +12,7 @@ const STATUS_LABEL = {
   offline: 'Hors ligne : les modifications partiront dès le retour du réseau',
   denied: 'Accès refusé par le relais',
   closed: 'Ce cercle a été fermé (clé renouvelée)',
+  full: "Espace de la famille plein sur le relais : supprimez des photos pour reprendre la synchronisation",
 } as const;
 
 export function SecurityPage() {
@@ -172,6 +173,10 @@ export function SecurityPage() {
           <Upload size={18} /> Restaurer
         </button>
       </div>
+
+      <button className="btn ghost wide" onClick={() => (location.hash = '#/about')}>
+        À propos et confidentialité
+      </button>
 
       <h3 className="apps-title">Zone sensible</h3>
       <div className="stack">

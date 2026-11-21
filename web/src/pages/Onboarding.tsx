@@ -8,6 +8,7 @@ import { useCollection, useEngine, useSyncStatus } from '../store';
 import { ColorPicker, Field, FieldGroup, PALETTE } from '../ui';
 import { JoinWaiting } from './Join';
 import { Scanner } from './Scanner';
+import { AboutPage, InstallCard } from './About';
 
 type Mode = 'choose' | 'create' | 'join';
 
@@ -40,6 +41,7 @@ export function Onboarding() {
   const [color, setColor] = useState(PALETTE[5]);
   const [paste, setPaste] = useState('');
   const [scanning, setScanning] = useState(false);
+  const [about, setAbout] = useState(false);
 
   const onScan = useCallback((text: string) => {
     setScanning(false);
@@ -59,9 +61,14 @@ export function Onboarding() {
     }
   };
 
+  if (about) {
+    return <AboutPage onBack={() => setAbout(false)} />;
+  }
+
   return (
     <div className="onboarding">
       <Hero />
+      <InstallCard />
 
       {mode === 'choose' && (
         <div className="stack">
@@ -75,6 +82,9 @@ export function Onboarding() {
             <Lock size={14} /> Vos données restent sur vos appareils.
             {RELAY_URL ? ' Le partage passe par un relais qui ne voit que des données chiffrées.' : ' (Mode local : aucun partage configuré.)'}
           </p>
+          <button className="link" onClick={() => setAbout(true)}>
+            À propos et confidentialité
+          </button>
         </div>
       )}
 

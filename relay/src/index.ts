@@ -12,13 +12,19 @@
  */
 import { Circle } from './circle';
 import { Invite } from './invite';
+import { Limiter } from './limiter';
 
-export { Circle, Invite };
+export { Circle, Invite, Limiter };
 
 export interface Env {
   CIRCLE: DurableObjectNamespace<Circle>;
   INVITE: DurableObjectNamespace<Invite>;
+  LIMITER: DurableObjectNamespace<Limiter>;
   ALLOWED_ORIGINS: string;
+  /** Garde-fous pour un relais ouvert au public (voir wrangler.toml). */
+  NEW_CIRCLES_PER_IP_PER_DAY?: string;
+  CIRCLE_QUOTA_MB?: string;
+  INACTIVE_DAYS?: string;
   VAPID_PUBLIC_KEY: string;
   VAPID_PRIVATE_JWK: string;
   VAPID_SUBJECT: string;
@@ -57,6 +63,13 @@ export default {
       res = new Response('Family App relay: ok', { headers: { 'Content-Type': 'text/plain' } });
     } else if (kind === 'vapid' && request.method === 'GET') {
       res = Response.json({ publicKey: env.VAPID_PUBLIC_KEY ?? null });
+    } else if (kind === 'limits' && request.method === 'GET') {
+      // Affiché dans l'appli (page « À propos et confidentialité »).
+      res = Response.json({
+        quotaMb: Number(env.CIRCLE_QUOTA_MB || 250),
+        inactiveDays: Number(env.INACTIVE_DAYS || 400),
+        newCirclesPerDay: Number(env.NEW_CIRCLES_PER_IP_PER_DAY || 10),
+      });
     } else if ((kind === 'c' || kind === 'i') && id && ID_RE.test(id)) {
       if (request.headers.get('Upgrade') === 'websocket' && !originAllowed(request, env)) {
         return new Response('Origine refusée', { status: 403 });

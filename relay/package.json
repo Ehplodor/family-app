@@ -8,7 +8,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "vapid": "node scripts/vapid.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "dev:test": "wrangler dev --port 8787 --ip 127.0.0.1 --var NEW_CIRCLES_PER_IP_PER_DAY:3 --var CIRCLE_QUOTA_MB:1 --var INACTIVE_DAYS:0.0002"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.0.0",

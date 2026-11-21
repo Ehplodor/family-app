@@ -93,6 +93,30 @@ Vous pouvez aussi déployer le relais depuis GitHub (onglet *Actions → Relay*)
 
 Sans `RELAY_URL`, l'appli fonctionne en **mode local** : un seul appareil, sans partage ni notifications.
 
+### Un service ouvert à tous
+
+La page publiée n'est liée à aucune famille. **N'importe qui peut l'ouvrir, l'installer et créer sa propre famille.**
+Chaque famille a ses propres clés, générées sur ses appareils : les familles sont invisibles et illisibles les unes
+pour les autres, y compris pour vous qui publiez le site.
+
+Le relais tourne sur **votre** compte Cloudflare. Pour qu'un inconnu ne puisse pas l'épuiser, il applique ces
+garde-fous, réglables dans `relay/wrangler.toml` :
+
+| Réglage | Défaut | Rôle |
+| --- | --- | --- |
+| `NEW_CIRCLES_PER_IP_PER_DAY` | 10 | Nouveaux cercles par connexion et par jour. Le relais ne conserve qu'une empreinte « adresse + jour », effacée après 2 jours. |
+| `CIRCLE_QUOTA_MB` | 250 | Espace maximum par famille (surtout les photos, déjà réduites avant envoi) |
+| `INACTIVE_DAYS` | 400 | Un cercle sans aucune connexion pendant ce délai est effacé du relais. Ses données restent sur les appareils et sont renvoyées si l'un d'eux revient. |
+
+- **Coût** : avec l'offre gratuite de Cloudflare, il n'y a **pas de facture surprise**. Si les limites quotidiennes
+  gratuites sont dépassées (environ 100 000 requêtes par jour), le relais refuse les requêtes jusqu'au lendemain.
+  Cela représente déjà beaucoup de familles. Au-delà, l'offre payante démarre à environ 5 $/mois.
+- **Transparence** : la page *À propos et confidentialité* explique à chaque visiteur où sont ses données et quelles
+  sont les limites. Elle est accessible dès l'accueil, avant même de créer une famille.
+- **Responsabilité** : vous hébergez des données chiffrées pour d'autres personnes, sans pouvoir les lire. Selon votre
+  pays et l'ampleur d'usage, une mention légale ou un contact peut être attendu ; renseignez-vous si le service
+  dépasse le cercle de vos proches.
+
 ### 3. Sur les téléphones
 
 - **Android** : ouvrir l'adresse dans Chrome, puis menu ⋮ → *Installer l'application*.
@@ -117,7 +141,7 @@ Pour tester le service worker, les notifications et le hors ligne, construisez l
 | Commande | Rôle |
 | --- | --- |
 | `npm test` | Tests unitaires : fusion des données (CRDT), cryptographie, calcul des rappels, planification école |
-| `npm run relay:test` | Tests d'intégration du relais : authentification, synchro, Web Push déchiffré par une implémentation de référence, invitations (relais local lancé) |
+| `npm run relay:test` | Tests d'intégration du relais : authentification, synchro, Web Push déchiffré par une implémentation de référence, invitations, garde-fous du service public (relais lancé avec `npm --prefix relay run dev:test`) |
 | `npm run typecheck` | Vérification TypeScript |
 | `npm run build` | Construit l'appli et le service worker dans `dist/` |
 

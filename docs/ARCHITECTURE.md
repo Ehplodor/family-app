@@ -116,6 +116,17 @@ Les services push des navigateurs (FCM, APNs, Mozilla) ne voient eux aussi que d
 sont chiffrées une première fois pour le navigateur (RFC 8291), et leur contenu est déjà chiffré une seconde fois
 avec la clé du cercle.
 
+### Un relais partagé par de nombreuses familles
+
+Le site public est le même pour tout le monde. Chaque famille crée son cercle avec un secret aléatoire de 256 bits.
+Les identifiants de cercle ne se devinent pas, et les jetons d'accès sont propres à chaque cercle. Pour un relais
+ouvert, les abus de ressources sont limités :
+
+- nombre de nouveaux cercles par connexion et par jour, compté avec une empreinte « adresse + jour » effacée sous
+  2 jours ;
+- quota d'espace par cercle ;
+- effacement des cercles inactifs.
+
 ### Menaces couvertes, et celles qui ne le sont pas
 
 | Menace | Protection |
@@ -129,6 +140,7 @@ avec la clé du cercle.
 | Code malveillant injecté dans la page | Politique CSP stricte : code et connexions limités à l'appli et au relais configuré |
 | **Compromission du dépôt GitHub** | ⚠️ Non couvert techniquement : le code servi par GitHub Pages a accès aux clés. **Activez l'authentification à deux facteurs, protégez la branche `main`, relisez les modifications.** Les actions GitHub sont épinglées par empreinte. |
 | **Autre site sur la même origine** | ⚠️ Toutes les pages `https://<compte>.github.io/*` partagent la même origine, donc le même stockage. **N'hébergez pas d'autres projets GitHub Pages sur ce compte, ou utilisez un domaine personnalisé** (ex. `famille.mondomaine.fr`). |
+| Visiteur malveillant qui crée des cercles en masse ou remplit l'espace | Limite de création par connexion et par jour, quota par cercle, effacement des cercles abandonnés |
 | Membre malveillant dans le cercle | Hors périmètre : tous les appareils du cercle sont de confiance. Un membre pourrait écrire au nom d'un autre. |
 
 ## Synchronisation : comment les modifications se fusionnent

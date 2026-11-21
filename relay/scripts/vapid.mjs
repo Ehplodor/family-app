@@ -6,7 +6,8 @@ const raw = Buffer.from(await crypto.subtle.exportKey('raw', kp.publicKey)).toSt
 const priv = JSON.stringify({ kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y, d: jwk.d });
 
 if (process.argv.includes('--dev-vars')) {
-  console.log(`VAPID_PUBLIC_KEY=${raw}\nVAPID_PRIVATE_JWK=${priv}`);
+  // En développement, on relâche la limite de création de cercles (tests répétés depuis la même machine).
+  console.log(`VAPID_PUBLIC_KEY=${raw}\nVAPID_PRIVATE_JWK=${priv}\nNEW_CIRCLES_PER_IP_PER_DAY=1000`);
 } else {
   console.log('Clé publique (à mettre dans wrangler.toml, [vars] VAPID_PUBLIC_KEY) :\n');
   console.log(`  ${raw}\n`);
