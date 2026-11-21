@@ -94,7 +94,15 @@ export function InvitePanel({ onDone }: { onDone: () => void }) {
                 await approveJoin(engine, inv, req);
                 setState('done');
               } catch (err) {
-                setError(err instanceof Error ? err.message : String(err));
+                const msg = err instanceof Error ? err.message : String(err);
+                // Quelqu'un d'autre a répondu à l'invitation : le lien a probablement fuité.
+                if (/déjà utilisée/.test(msg)) {
+                  return setError(
+                    "⚠️ Quelqu'un d'autre a déjà répondu à cette invitation : le lien a peut-être été intercepté. " +
+                      "Sur le nouvel appareil, n'utilisez pas la famille qu'il affiche : effacez-le (Sécurité) et recommencez avec une nouvelle invitation, transmise en main propre.",
+                  );
+                }
+                setError(msg);
                 setState('waiting');
               }
             }}
