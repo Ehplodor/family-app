@@ -1,0 +1,12 @@
+services:
+  family-app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data
+    environment:
+      # Derrière un reverse proxy HTTPS (Caddy, Nginx, Traefik…) :
+      TRUST_PROXY: "1"
+      COOKIE_SECURE: "1"
