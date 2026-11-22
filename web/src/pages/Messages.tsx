@@ -3,6 +3,7 @@ import { Lock, MessageSquareText, Send, Users } from 'lucide-react';
 import { useCollection, useGroups, useLocalState, useMe, useMembers } from '../store';
 import { navigate } from '../router';
 import { PRIVATE_MESSAGES } from '../lib/groupManager';
+import { groupLabel } from './Circles';
 import { relativeDay, timeOf, toISODate } from '../dates';
 import { Avatar, Empty, Page } from '../ui';
 
@@ -18,7 +19,8 @@ function useConversations() {
   const groups = useGroups();
   const family = useCollection<Message>('messages').docs;
   const all = groups.privateDocs<Message>(PRIVATE_MESSAGES);
-  const circles = groups.list().filter((g) => !g.personal && (g.access === 'ok' || all.some((m) => m.groups.includes(g.id))));
+  // « Moi seul » a aussi sa conversation : notes, liens, idées à garder pour soi (synchronisées entre ses appareils).
+  const circles = groups.list().filter((g) => g.access === 'ok' || all.some((m) => m.groups.includes(g.id)));
   return { family, circles, privateOf: (id: string) => all.filter((m) => m.groups[0] === id) };
 }
 
@@ -89,7 +91,7 @@ export function MessagesPage({ params = [] }: { params?: string[] }) {
               style={circle?.id === g.id ? { background: g.color, borderColor: g.color } : { borderColor: g.color }}
               onClick={() => navigate(`/m/messages/${g.id}`)}
             >
-              <Lock size={14} /> {g.name}
+              <Lock size={14} /> {groupLabel(g)}
             </button>
           ))}
         </div>
@@ -98,7 +100,9 @@ export function MessagesPage({ params = [] }: { params?: string[] }) {
         {messages.loaded && !messages.docs.length && (
           <Empty icon={<MessageSquareText size={48} />}>
             {circle
-              ? `Conversation du cercle « ${circle.name} » : seuls ses membres la lisent (chiffrée pour eux).`
+              ? circle.personal
+                ? 'Vos notes personnelles : visibles seulement sur vos appareils autorisés (chiffrées). Pratique pour un lien, une idée, une liste à garder pour soi.'
+                : `Conversation du cercle « ${circle.name} » : seuls ses membres la lisent (chiffrée pour eux).`
               : 'Le fil de discussion de la famille. Dites bonjour 👋'}
           </Empty>
         )}
@@ -133,7 +137,7 @@ export function MessagesPage({ params = [] }: { params?: string[] }) {
         <input
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder={circle ? `Message pour « ${circle.name} »…` : 'Votre message…'}
+          placeholder={circle ? (circle.personal ? 'Note pour moi…' : `Message pour « ${circle.name} »…`) : 'Votre message…'}
           enterKeyHint="send"
           disabled={!canWrite}
         />
