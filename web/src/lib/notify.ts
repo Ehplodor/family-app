@@ -13,6 +13,7 @@ import type { Op } from './replica';
 import { DEFAULT_SNOOZE, PUSH_FOLLOW_UPS, ringsBetween, type Alarm } from './alarms';
 import { computeReminders, DEFAULT_PREFS, outOfQuietHours, type NotifPrefs, type ReminderData } from './reminders';
 import { RELAY_URL, relayFetch } from './sync';
+import { PRIVATE_EVENTS } from './groupManager';
 
 export type PushPayload = {
   title: string;
@@ -46,7 +47,7 @@ async function topicOf(tag: string) {
 }
 
 /** Collections dont dépendent les rappels planifiés. */
-const SCHEDULE_SOURCES = ['events', 'birthdays', 'tasks', 'meals', 'members', 'schoolProfiles', 'timetable', 'homework', 'cards', 'alarms'];
+const SCHEDULE_SOURCES = ['events', 'birthdays', 'tasks', 'meals', 'members', 'schoolProfiles', 'timetable', 'homework', 'cards', 'alarms', 'groups'];
 /** Les réveils sont planifiés sur 7 jours (l'appli recalcule à chaque ouverture). */
 const ALARM_HORIZON = 7 * 86400_000;
 const MAX_SCHEDULE = 300; // limite du relais par appareil
@@ -57,6 +58,8 @@ export class Notifier {
   private needAll = false;
   private activity = new Map<string, { count: number; build: (n: number) => { payload: PushPayload; targets: string[]; urgent?: boolean } }>();
   private activityTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Une modification locale d'un évènement privé ou d'un cercle attend d'être prise en compte. */
+  private privateLocalChange = false;
 
   constructor(private engine: Engine) {
     engine.replica.onChange((cols, local) => {
@@ -69,6 +72,14 @@ export class Notifier {
       prevOnLocal?.(ops);
       this.onLocalOps(ops);
     };
+    // Évènements privés : déchiffrés en arrière-plan ; on replanifie quand ils changent.
+    let groupsVersion = engine.groups.getVersion();
+    engine.groups.subscribe(() => {
+      if (engine.groups.getVersion() === groupsVersion) return;
+      groupsVersion = engine.groups.getVersion();
+      this.scheduleUpload(this.privateLocalChange);
+      this.privateLocalChange = false;
+    });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') this.flushActivity();
     });
@@ -219,6 +230,70 @@ export class Notifier {
       });
       this.uploaded.set(key, fingerprint);
     }
+    await this.uploadPrivateSchedules(everyone).catch((err) => console.warn('rappels privés', err));
+  }
+
+  /**
+   * Rappels des évènements privés : une liste à part par appareil ET par cercle restreint, calculée
+   * seulement par les appareils qui ont la clé de ce cercle. Ainsi, un appareil qui ne voit pas ces
+   * évènements ne peut pas effacer leurs rappels en envoyant la liste principale, et le contenu ne part
+   * qu'aux appareils des membres du cercle. (Un évènement visible par deux cercles d'une même personne
+   * donne deux rappels identiques, que le téléphone fusionne grâce à leur étiquette commune.)
+   */
+  private async uploadPrivateSchedules(everyone: boolean) {
+    if (!this.circle || !RELAY_URL) return;
+    const groups = this.engine.groups;
+    const all = groups.privateEvents<ReminderData['events'][number]>();
+    for (const g of groups.list()) {
+      if (g.access !== 'ok') continue;
+      const events = all.filter((e) => e.groups.includes(g.id));
+      // Seuls les appareils AUTORISÉS (qui ont la clé du cercle) reçoivent ces rappels : un appareil qui a
+      // seulement choisi le profil d'un membre à son arrivée ne doit rien recevoir de ses évènements privés.
+      const authorized = new Set(groups.holders(g.id).map((d) => d.id));
+      const targets = this.devices().filter(
+        (d) => d.push && authorized.has(d.id) && g.members.includes(d.memberId) && (everyone || d.id === this.engine.deviceId),
+      );
+      for (const d of targets) {
+        const reminders = computeReminders(
+          { events, birthdays: [], tasks: [], meals: [] },
+          d.memberId,
+          prefsOf(this.engine, d.memberId),
+        ).filter((r) => r.kind === 'event');
+        await this.putPart(d.id, g.id, reminders);
+      }
+    }
+  }
+
+  /** Remplace la liste de rappels privés d'un appareil pour un cercle (liste vide = effacer). */
+  async putPart(deviceId: string, groupId: string, reminders: ReturnType<typeof computeReminders>) {
+    if (!this.circle || !RELAY_URL) return;
+    const key = `${this.circle.circleId}:${deviceId}:${groupId}`;
+    const fingerprint = JSON.stringify(reminders);
+    if (this.uploaded.get(key) === fingerprint) return;
+    const items: QueueItem[] = [];
+    for (const r of reminders) {
+      items.push({
+        device: deviceId,
+        at: r.at,
+        topic: await topicOf(r.tag),
+        urgent: r.urgent,
+        payload: await this.encrypt({ title: r.title, body: r.body, tag: r.tag, url: r.url, kind: r.kind, snooze: true }),
+      });
+    }
+    await relayFetch(this.circle, `/part-schedule/${deviceId}/${groupId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: items.slice(0, MAX_SCHEDULE) }),
+    });
+    this.uploaded.set(key, fingerprint);
+  }
+
+  /** Après le retrait de membres d'un cercle : leurs appareils ne doivent plus recevoir ses rappels. */
+  async clearPartsFor(groupId: string, memberIds: string[]) {
+    for (const d of this.devices().filter((x) => memberIds.includes(x.memberId))) {
+      this.uploaded.delete(`${this.circle?.circleId}:${d.id}:${groupId}`);
+      await this.putPart(d.id, groupId, []).catch(() => {});
+    }
   }
 
   /** Sonneries des 7 prochains jours des réveils rangés sur un appareil. */
@@ -237,8 +312,13 @@ export class Notifier {
 
   /** Prochains rappels de cet appareil (affichés dans l'écran Notifications). */
   upcomingForMe() {
-    if (!this.engine.memberId) return [];
-    return computeReminders(this.reminderData(), this.engine.memberId, prefsOf(this.engine, this.engine.memberId));
+    const memberId = this.engine.memberId;
+    if (!memberId) return [];
+    const prefs = prefsOf(this.engine, memberId);
+    const mine = new Set(this.engine.groups.list().filter((g) => g.members.includes(memberId)).map((g) => g.id));
+    const events = this.engine.groups.privateEvents<ReminderData['events'][number]>().filter((e) => e.groups.some((g) => mine.has(g)));
+    const privateOnes = computeReminders({ events, birthdays: [], tasks: [], meals: [] }, memberId, prefs).filter((r) => r.kind === 'event');
+    return [...computeReminders(this.reminderData(), memberId, prefs), ...privateOnes].sort((a, b) => a.at - b.at);
   }
 
   /* ------------------------------------------------------------ activité (regroupée) */
@@ -319,6 +399,20 @@ export class Notifier {
         this.queueActivity(`ev-${op.i}`, () => ({
           payload: { title: isNew ? `📅 Nouvel événement` : '📅 Événement modifié', body: `${ev.title} · ${when} (par ${me})`, tag: `evchg-${op.i}`, url: '#/m/calendar', kind: 'calendar' },
           targets: this.targets((mid, p) => p.calendarChanges && (!ev.memberIds?.length || ev.memberIds.includes(mid))),
+        }));
+      } else if (op.c === PRIVATE_EVENTS && !op.d && op.f?.box) {
+        // Évènement privé : on ne prévient que les membres de ses cercles (le contenu reste chiffré pour les autres).
+        this.privateLocalChange = true;
+        const ev = this.engine.groups.privateEvents<{ title: string; date: string; start?: string; allDay: boolean; memberIds: string[] }>().find((e) => e.id === op.i);
+        if (!ev) continue;
+        const allowed = this.engine.groups.membersOf(ev.groups);
+        const authorized = new Set(ev.groups.flatMap((g) => this.engine.groups.holders(g).map((d) => d.id)));
+        const when = `${new Date(ev.date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}${ev.allDay ? '' : ` ${ev.start ?? ''}`}`;
+        this.queueActivity(`ev-${op.i}`, () => ({
+          payload: { title: isNew ? `🔒 Nouvel événement` : '🔒 Événement modifié', body: `${ev.title} · ${when} (par ${me})`, tag: `evchg-${op.i}`, url: '#/m/calendar', kind: 'calendar' },
+          targets: this.targets((mid, p) => p.calendarChanges && allowed.has(mid) && (!ev.memberIds?.length || ev.memberIds.includes(mid))).filter((id) =>
+            authorized.has(id),
+          ),
         }));
       } else if (op.c === 'tasks' && op.f && 'assigneeId' in op.f && op.f.assigneeId && op.f.assigneeId !== this.engine.memberId) {
         const task = r.get<{ title: string }>('tasks', op.i);

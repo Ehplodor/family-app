@@ -1589,3 +1589,39 @@ input.switch {
 .icon-btn.compact {
   width: 32px;
 }
+
+/* Cercles restreints (évènements privés) */
+.badge-host {
+  position: relative;
+}
+.badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #e5484d;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+.cal-list li > .stack {
+  flex-basis: 100%;
+}
+.cal-list li > .stack > .toggle {
+  align-items: center;
+}
+.chip svg,
+.agenda svg {
+  vertical-align: -2px;
+}
+.circles-btn {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}

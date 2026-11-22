@@ -1,0 +1,225 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// La réplique enregistre dans IndexedDB : inutile ici (tout reste en mémoire).
+vi.mock('./idb', () => ({
+  putMany: async () => {},
+  entries: async () => [],
+  get: async () => undefined,
+  put: async () => {},
+}));
+
+import { newDeviceKeys, newSecret, deriveGroupKey } from './crypto';
+import { randomId } from './bytes';
+import { Replica, type Op } from './replica';
+import { GroupManager, PRIVATE_EVENTS } from './groupManager';
+import {
+  latestKey,
+  openPrivate,
+  pendingDevices,
+  personalGroupId,
+  sealPrivate,
+  type GroupKeyDoc,
+  type HeldKey,
+  type PrivateDoc,
+} from './groups';
+
+/* ------------------------------------------------------------------ Fonctions pures */
+
+const kd = (group: string, key: string, epoch: number, device: string): GroupKeyDoc => ({ group, key, epoch, device, env: '', by: device });
+
+describe('cercles : règles', () => {
+  it('la clé en vigueur est celle de la plus haute époque (puis du plus petit identifiant)', () => {
+    const g = randomId();
+    const a = 'a'.repeat(32);
+    const b = 'b'.repeat(32);
+    const c = 'c'.repeat(32);
+    expect(latestKey([kd(g, b, 0, 'x'), kd(g, a, 0, 'y')], g)).toEqual({ key: a, epoch: 0 });
+    expect(latestKey([kd(g, a, 0, 'x'), kd(g, c, 1, 'y'), kd(randomId(), b, 9, 'z')], g)).toEqual({ key: c, epoch: 1 });
+    expect(latestKey([], g)).toBeNull();
+  });
+
+  it("n'attendent l'accès que les appareils non retirés des membres du cercle qui n'ont pas la clé", () => {
+    const g = randomId();
+    const k = 'a'.repeat(32);
+    const pub = { kty: 'EC' };
+    const devices = [
+      { id: 'd1', memberId: 'rod', pub },
+      { id: 'd2', memberId: 'rod', pub },
+      { id: 'd3', memberId: 'rod', pub, revoked: true },
+      { id: 'd4', memberId: 'leo', pub },
+      { id: 'd5', memberId: 'julie' },
+    ];
+    const meta = { name: 'Parents', color: '#000', members: ['rod', 'julie'] };
+    expect(pendingDevices(meta, [kd(g, k, 0, 'd1')], g, devices).map((d) => d.id)).toEqual(['d2']);
+  });
+
+  it("l'identifiant du cercle personnel est le même sur tous les appareils d'un membre", async () => {
+    expect(await personalGroupId('rod')).toBe(await personalGroupId('rod'));
+    expect(await personalGroupId('rod')).not.toBe(await personalGroupId('julie'));
+    expect(await personalGroupId('rod')).toMatch(/^[0-9a-f]{32}$/);
+  });
+});
+
+async function heldKey(group = randomId(), epoch = 0): Promise<HeldKey> {
+  const secret = newSecret();
+  return { group, keyId: randomId(), epoch, key: await deriveGroupKey(secret), secret };
+}
+
+describe('cercles : chiffrement des éléments', () => {
+  it("un élément partagé par deux cercles est lisible avec la clé de l'un OU de l'autre, et pas sans", async () => {
+    const parents = await heldKey();
+    const perso = await heldKey();
+    const autre = await heldKey();
+    const id = randomId();
+    const box = await sealPrivate(PRIVATE_EVENTS, id, { title: 'Surprise', groups: [parents.group, perso.group] }, [parents, perso]);
+    expect(Object.keys(box.w)).toHaveLength(2);
+    expect(JSON.stringify(box)).not.toContain('Surprise');
+    expect(await openPrivate(PRIVATE_EVENTS, id, box, new Map([[parents.keyId, parents]]))).toMatchObject({ title: 'Surprise' });
+    expect(await openPrivate(PRIVATE_EVENTS, id, box, new Map([[perso.keyId, perso]]))).toMatchObject({ title: 'Surprise' });
+    expect(await openPrivate(PRIVATE_EVENTS, id, box, new Map([[autre.keyId, autre]]))).toBeNull();
+  });
+
+  it("un contenu chiffré ne peut pas être recopié sur un autre élément ou une autre collection", async () => {
+    const k = await heldKey();
+    const held = new Map([[k.keyId, k]]);
+    const id = randomId();
+    const box = await sealPrivate(PRIVATE_EVENTS, id, { title: 'x', groups: [k.group] }, [k]);
+    expect(await openPrivate(PRIVATE_EVENTS, randomId(), box, held)).toBeNull();
+    expect(await openPrivate('privateTasks', id, box, held)).toBeNull();
+  });
+
+  it('chaque enregistrement tire une nouvelle clé (sauf si un cercle dont on n’a pas la clé doit être gardé)', async () => {
+    const a = await heldKey();
+    const b = await heldKey();
+    const id = randomId();
+    const first = await sealPrivate(PRIVATE_EVENTS, id, { v: 1 }, [a, b]);
+    const second = await sealPrivate(PRIVATE_EVENTS, id, { v: 2 }, [a, b]);
+    expect(second.w[a.keyId]).not.toBe(first.w[a.keyId]);
+    // Appareil qui n'a que la clé de `a` : il garde l'enveloppe de `b` et la clé de l'élément.
+    const edited = await sealPrivate(PRIVATE_EVENTS, id, { v: 3 }, [a], {
+      keep: { [b.keyId]: first.w[b.keyId] },
+      previous: first,
+      held: new Map([[a.keyId, a]]),
+    });
+    expect(await openPrivate(PRIVATE_EVENTS, id, edited, new Map([[b.keyId, b]]))).toEqual({ v: 3 });
+  });
+});
+
+/* ------------------------------------------------------------------ Plusieurs appareils d'une famille */
+
+type Phone = { id: string; replica: Replica; groups: GroupManager; member: string };
+
+describe('cercles : plusieurs appareils', () => {
+  let phones: Phone[];
+  let queue: { from: Phone; ops: Op[] }[];
+
+  /** Simule le relais : chaque modification locale est transmise aux autres appareils. */
+  async function sync() {
+    while (queue.length) {
+      const { from, ops } = queue.shift()!;
+      for (const p of phones) if (p !== from) await p.replica.applyRemote(structuredClone(ops));
+    }
+    for (const p of phones) await p.groups.refresh();
+  }
+
+  async function phone(member: string): Promise<Phone> {
+    const id = randomId();
+    const keys = await newDeviceKeys();
+    const replica = new Replica(id);
+    replica.memberId = member;
+    const p: Phone = { id, replica, member, groups: new GroupManager(replica, { deviceId: id, privateKey: keys.privateKey }, () => member) };
+    replica.onLocalOps = (ops) => queue.push({ from: p, ops });
+    // Rattrape ce qui existe déjà (comme un nouvel appareil qui reçoit l'instantané).
+    if (phones.length) await replica.mergeRecords(structuredClone(phones[0].replica.allRecords()));
+    await replica.upsert('devices', id, { memberId: member, label: `Téléphone ${member}`, pub: keys.publicJwk });
+    phones.push(p);
+    await sync();
+    return p;
+  }
+
+  const titles = (p: Phone) => p.groups.privateEvents<{ title: string }>().map((e) => e.title).sort();
+
+  beforeEach(() => {
+    phones = [];
+    queue = [];
+  });
+
+  it("un évènement « Moi seul » n'est lisible que par les appareils autorisés de son auteur", async () => {
+    const rod = await phone('rod');
+    const julie = await phone('julie');
+    await rod.groups.ensurePersonal();
+    await sync();
+    const perso = await personalGroupId('rod');
+    await rod.groups.saveEvent(randomId(), { title: 'Dentiste', date: '2026-12-01' }, [perso]);
+    await sync();
+    expect(titles(rod)).toEqual(['Dentiste']);
+    expect(titles(julie)).toEqual([]);
+    // Le contenu ne figure nulle part en clair dans la copie de Julie.
+    expect(JSON.stringify(julie.replica.allRecords())).not.toContain('Dentiste');
+
+    // Nouvel appareil de Rod (ou appareil qui choisit le profil « Rod » !) : en attente, sans accès.
+    const tablet = await phone('rod');
+    await tablet.groups.ensurePersonal(); // ne crée pas de doublon : le cercle existe déjà
+    await sync();
+    expect(titles(tablet)).toEqual([]);
+    expect(await tablet.groups.personalStatus()).toBe('waiting');
+    expect(rod.groups.pending(perso).map((d) => d.id)).toEqual([tablet.id]);
+    // Rod l'autorise d'un geste, depuis son téléphone.
+    await rod.groups.grant(perso, tablet.id);
+    await sync();
+    expect(titles(tablet)).toEqual(['Dentiste']);
+    expect(rod.groups.pending(perso)).toEqual([]);
+  });
+
+  it('un évènement partagé par plusieurs cercles ; retirer un membre change la clé', async () => {
+    const rod = await phone('rod');
+    const julie = await phone('julie');
+    const leo = await phone('leo');
+    const parents = await rod.groups.create({ name: 'Parents', color: '#123456', members: ['rod', 'julie'] });
+    await sync();
+    // Julie n'a pas encore été autorisée : elle ne voit même pas le nom du cercle.
+    expect(julie.groups.list()).toEqual([]);
+    expect(rod.groups.pending(parents).map((d) => d.id)).toEqual([julie.id]);
+    await rod.groups.grant(parents, julie.id);
+    await rod.groups.ensurePersonal();
+    await sync();
+    expect(julie.groups.list().map((g) => g.name)).toEqual(['Parents']);
+
+    const id = randomId();
+    await rod.groups.saveEvent(id, { title: 'Cadeau de Léo' }, [parents, await personalGroupId('rod')]);
+    await sync();
+    expect(titles(julie)).toEqual(['Cadeau de Léo']);
+    expect(titles(leo)).toEqual([]);
+
+    // Julie modifie : elle n'a pas la clé de « Moi seul » de Rod, l'évènement reste visible par les deux cercles.
+    await julie.groups.saveEvent(id, { title: 'Cadeau de Léo (vélo)' }, [parents, await personalGroupId('rod')]);
+    await sync();
+    expect(titles(rod)).toEqual(['Cadeau de Léo (vélo)']);
+
+    // Rod retire Julie du cercle : nouvelle clé, que Julie ne reçoit pas.
+    await rod.groups.update(parents, { members: ['rod'] });
+    await sync();
+    // La description du cercle est rechiffrée avec la nouvelle clé : Julie ne le voit plus du tout.
+    expect(julie.groups.list()).toEqual([]);
+    await rod.groups.saveEvent(id, { title: 'Cadeau de Léo (trottinette)' }, [parents]);
+    await rod.groups.saveEvent(randomId(), { title: 'Nouveau secret' }, [parents]);
+    await sync();
+    expect(titles(rod)).toEqual(['Cadeau de Léo (trottinette)', 'Nouveau secret']);
+    expect(titles(julie)).toEqual([]);
+    // Et Julie ne peut plus écrire avec l'ancienne clé dans ce cercle.
+    await expect(julie.groups.update(parents, { name: 'Piraté' })).rejects.toThrow();
+  });
+
+  it("la suppression efface le contenu chiffré des copies", async () => {
+    const rod = await phone('rod');
+    await rod.groups.ensurePersonal();
+    const id = randomId();
+    await rod.groups.saveEvent(id, { title: 'À effacer' }, [await personalGroupId('rod')]);
+    await rod.groups.removeEvent(id);
+    await sync();
+    expect(titles(rod)).toEqual([]);
+    const rec = rod.replica.allRecords((r) => r.c === PRIVATE_EVENTS && r.id === id)[0];
+    expect(rec.del).toBeTruthy();
+    expect((rec.f.box?.v as PrivateDoc['box']) ?? null).toBeNull();
+  });
+});

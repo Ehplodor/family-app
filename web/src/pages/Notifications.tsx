@@ -4,7 +4,7 @@ import type { Device } from '../lib/engine';
 import { DEFAULT_PREFS, type NotifPrefs } from '../lib/reminders';
 import { isIOS, isStandalone, prefsOf, pushSupported } from '../lib/notify';
 import { RELAY_URL } from '../lib/sync';
-import { useCollection, useDoc, useEngine, useMe, useNotifier } from '../store';
+import { useCalendarEvents, useCollection, useDoc, useEngine, useMe, useNotifier } from '../store';
 import { fmt } from '../dates';
 import { Field, Page } from '../ui';
 
@@ -31,7 +31,7 @@ export function NotificationsPage() {
   const [info, setInfo] = useState('');
   const [busy, setBusy] = useState(false);
   // Recalcule l'aperçu quand les données changent.
-  const events = useCollection('events').docs;
+  const events = useCalendarEvents();
   const tasks = useCollection('tasks').docs;
   const birthdays = useCollection('birthdays').docs;
   const meals = useCollection('meals').docs;

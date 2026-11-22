@@ -165,3 +165,18 @@ async function passphraseKey(passphrase: string, salt: Bytes, iterations: number
     'decrypt',
   ]);
 }
+
+/* ---------------------------------------------------------------- Cercles restreints (groupes) */
+
+/**
+ * Clé AES-256-GCM d'un cercle restreint (« Parents », « Moi seul »…), dérivée de son propre secret de
+ * 256 bits. Ce secret n'est transmis qu'aux appareils autorisés, chiffré pour chacun (sealToDevice).
+ */
+export const deriveGroupKey = (secret: Bytes) => aesKeyFrom(secret, 'group-content-key');
+
+/** Clé aléatoire à usage unique pour un élément partagé par plusieurs cercles (octets bruts + clé AES). */
+export async function newItemKey(): Promise<{ raw: Bytes; key: CryptoKey }> {
+  const raw = randomBytes(32);
+  return { raw, key: await importItemKey(raw) };
+}
+export const importItemKey = (raw: Bytes) => subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);

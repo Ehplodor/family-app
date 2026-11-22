@@ -135,6 +135,31 @@ export function useDoc<T extends object>(collection: string, id: string): Doc<T>
   return docs.find((d) => d.id === id);
 }
 
+/* ------------------------------------------------------------------ Cercles restreints */
+
+/** Cercles restreints lisibles par cet appareil (se met à jour après chaque déchiffrement). */
+export function useGroups() {
+  const engine = useEngine();
+  const g = engine.groups;
+  useSyncExternalStore((cb) => g.subscribe(cb), g.getVersion);
+  return g;
+}
+
+/**
+ * Évènements du calendrier : ceux de toute la famille + les évènements privés que cet appareil peut lire
+ * (ces derniers portent la liste `groups` des cercles qui les voient).
+ */
+export function useCalendarEvents<T extends object>(): Doc<T & { groups?: string[] }>[] {
+  const family = useCollection<T>('events').docs;
+  const groups = useGroups();
+  const version = groups.getVersion();
+  return useMemo(
+    () => [...family, ...groups.privateEvents<T>()] as Doc<T & { groups?: string[] }>[],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [family, groups, version],
+  );
+}
+
 /* ------------------------------------------------------------------ Moi / la famille */
 
 export function useMe(): Me {

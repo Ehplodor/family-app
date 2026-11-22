@@ -15,6 +15,7 @@ import {
   type CircleKeys,
 } from './crypto';
 import { Replica, type DocRecord } from './replica';
+import { GroupManager } from './groupManager';
 import { RELAY_URL, registerCircle, relayFetch, SyncClient } from './sync';
 
 export type Identity = { deviceId: string; privateKey: CryptoKey; publicJwk: JsonWebKey };
@@ -42,10 +43,13 @@ export class Engine {
   memberId: string | null = null;
   /** Cet appareil a été retiré du cercle (clé renouvelée sans lui). */
   removed = false;
+  /** Cercles restreints (« Parents », « Moi seul »…) et évènements privés. */
+  groups: GroupManager;
   private listeners = new Set<EngineListener>();
 
   private constructor(readonly identity: Identity) {
     this.replica = new Replica(identity.deviceId);
+    this.groups = new GroupManager(this.replica, identity, () => this.memberId);
     this.replica.onLocalOps = () => this.sync?.flush();
     this.replica.onChange((cols) => {
       if (cols.has('_rotation')) this.checkRotation();
@@ -64,6 +68,7 @@ export class Engine {
     e.memberId = (await idb.get<string>('kv', 'memberId')) ?? null;
     e.removed = (await idb.get<boolean>('kv', 'removed')) ?? false;
     e.replica.memberId = e.memberId;
+    await e.groups.refresh();
     // Demande au navigateur de ne pas effacer les données locales en cas de manque d'espace.
     navigator.storage?.persist?.().catch(() => {});
     if (e.circle) await e.startSync();
@@ -92,6 +97,7 @@ export class Engine {
     this.sync.whenReady().then(() => {
       this.checkRotation();
       this.flushPendingBlobs();
+      this.ensurePersonalGroup();
     });
   }
 
@@ -143,6 +149,13 @@ export class Engine {
       label: deviceLabel(),
       pub: this.identity.publicJwk,
     });
+    if (this.sync?.status === 'online' || !RELAY_URL) this.ensurePersonalGroup();
+  }
+
+  /** Cercle personnel (« Moi seul ») : créé au besoin, une fois les données de la famille reçues. */
+  private ensurePersonalGroup() {
+    if (this.removed || !this.memberId) return;
+    this.groups.ensurePersonal().catch((err) => console.warn('Cercle personnel', err));
   }
 
   async circleSafetyCode(): Promise<string> {
@@ -297,12 +310,19 @@ export class Engine {
         if (b) blobs[p.blobId!] = { mime: b.type, data: b64url(new Uint8Array(await b.arrayBuffer())) };
       }
     }
-    const text = await passphraseSeal(passphrase, utf8.encode(JSON.stringify({ v: 1, at: new Date().toISOString(), records, blobs })));
+    // Clés des cercles restreints de cet appareil : sans elles, ses évènements privés seraient illisibles
+    // sur un appareil restauré (la sauvegarde reste protégée par la phrase secrète).
+    const groupSecrets = this.groups.exportSecrets().map((s) => ({ ...s, secret: b64url(s.secret) }));
+    const text = await passphraseSeal(passphrase, utf8.encode(JSON.stringify({ v: 1, at: new Date().toISOString(), records, blobs, groupSecrets })));
     return new Blob([text], { type: 'application/json' });
   }
 
   async importBackup(passphrase: string, file: File) {
-    let data: { records: DocRecord[]; blobs?: Record<string, { mime: string; data: string }> };
+    let data: {
+      records: DocRecord[];
+      blobs?: Record<string, { mime: string; data: string }>;
+      groupSecrets?: { group: string; key: string; epoch: number; secret: string }[];
+    };
     try {
       data = JSON.parse(fromUtf8.decode(await passphraseOpen(passphrase, await file.text())));
     } catch {
@@ -314,6 +334,11 @@ export class Engine {
       await idb.put('kv', 'pendingBlobs', [...pending, id]);
     }
     await this.replica.mergeRecords(data.records, true);
+    if (Array.isArray(data.groupSecrets) && this.memberId) {
+      await this.groups
+        .importSecrets(data.groupSecrets.map((s) => ({ ...s, secret: fromB64url(String(s.secret)) })))
+        .catch((err) => console.warn('Clés des cercles', err));
+    }
     if (this.sync && RELAY_URL) {
       this.sync.pushRecords(data.records).catch(() => {});
       this.flushPendingBlobs();

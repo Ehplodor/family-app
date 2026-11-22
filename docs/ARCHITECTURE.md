@@ -106,6 +106,48 @@ nouvel appareil déclenche une **alerte de sécurité** chez tous les membres.
 > Limite inhérente à tout système : un appareil retiré **garde les données qu'il avait déjà**. Le renouvellement
 > protège l'avenir, pas le passé.
 
+### Cercles restreints : « Moi seul », « Parents »…
+
+Tous les appareils de la famille ont la clé du cercle familial. Pour qu'un évènement du calendrier ne soit vu que
+par quelques personnes, il est chiffré **une seconde fois** (`web/src/lib/groups.ts`, testé dans `groups.test.ts`) :
+
+```
+Secret d'un cercle restreint (256 bits, propre à ce cercle)
+   ├── remis à chaque appareil AUTORISÉ, chiffré pour sa clé publique (ECDH)   → collection groupKeys
+   └── HKDF → clé AES-256-GCM du cercle
+          ├── chiffre la description du cercle (nom, couleur, membres)          → collection groups
+          └── chiffre la clé à usage unique de chaque évènement (une par cercle)
+Clé à usage unique de l'évènement → chiffre l'évènement entier (titre, date, notes…) → collection privateEvents
+```
+
+- **Plusieurs cercles** : l'évènement est chiffré une fois ; seule sa clé est « emballée » pour chaque cercle. Un
+  appareil hors de ces cercles ne voit qu'un paquet illisible, sans titre ni date. Le relais, lui, ne voit que la
+  couche familiale, comme pour tout le reste. Les « données associées » lient chaque paquet à son évènement : on ne
+  peut pas recopier le contenu d'un évènement sur un autre.
+- **Cercle personnel** : chaque membre a automatiquement son cercle « Moi seul » (identifiant dérivé de son
+  identifiant de membre, pour éviter les doublons entre ses appareils). Chaque appareil peut en faire la visibilité
+  par défaut de ses nouveaux évènements (réglage local, « Toute la famille » par défaut).
+- **Nouvel appareil : autorisation d'un geste.** À son arrivée dans la famille, un appareil choisit lui-même « qui il
+  est ». Il ne reçoit donc **jamais automatiquement** la clé d'un cercle : un appareil qui y a déjà accès affiche
+  « X attend l'accès » et doit appuyer sur *Autoriser*. Les rappels et notifications d'un évènement privé ne partent
+  qu'aux appareils autorisés.
+- **Retirer un membre** d'un cercle crée une nouvelle clé (époque suivante), remise seulement aux appareils déjà
+  autorisés des membres restants ; la description du cercle est rechiffrée avec elle. Chaque modification d'un
+  évènement tire une nouvelle clé à usage unique : la personne retirée garde ce qu'elle avait déjà vu, mais ne lit
+  plus ce qui est ajouté ou modifié ensuite.
+- **Rendre privé un évènement familial** crée un évènement chiffré et efface le contenu de l'ancien sur toutes les
+  copies. Les appareils qui l'avaient déjà reçu l'ont vu : l'appli le rappelle avant de confirmer.
+- **Rappels** : les appareils qui ne voient pas un évènement privé ne doivent pas pouvoir effacer ses rappels. Le
+  relais garde donc, pour chaque appareil, une liste de rappels **à part par cercle restreint**
+  (`PUT /c/<cercle>/part-schedule/<appareil>/<id aléatoire du cercle>`, au plus 16 listes par appareil), calculée
+  uniquement par les appareils qui ont la clé du cercle. Le résumé du matin ne mentionne pas les évènements privés.
+- **Sauvegarde** : la sauvegarde chiffrée (phrase secrète) contient aussi les clés des cercles de l'appareil, pour
+  que ses évènements privés restent lisibles après une restauration.
+- **Limites** : la fusion se fait par évènement entier (et non champ par champ) pour un évènement privé ; un membre
+  qui ferait tourner une version modifiée de l'appli pourrait perturber un cercle dont il fait ou a fait partie
+  (même limite que « membre malveillant » plus bas) ; si tous les appareils autorisés d'un cercle sont perdus sans
+  sauvegarde, ses évènements deviennent illisibles.
+
 ### Ce que le relais voit (métadonnées)
 
 | Le relais connaît | Le relais ne connaît pas |
@@ -114,6 +156,7 @@ nouvel appareil déclenche une **alerte de sécurité** chez tous les membres.
 | Des identifiants d'appareils aléatoires | Le contenu des listes, de l'agenda, des messages, des photos |
 | La taille et l'heure des paquets chiffrés | Le titre et le texte des notifications |
 | L'**heure** d'envoi des rappels planifiés | La clé du cercle, et le jeton d'accès en clair (seulement son empreinte) |
+| Pour chaque appareil, le nombre de cercles restreints dont il reçoit des rappels (identifiants aléatoires) | Le nom, les membres et le contenu des cercles restreints |
 | L'adresse des services push (Google, Apple, Mozilla) | Qui a écrit quoi |
 
 **Seule exception, choisie par l'utilisateur : les abonnements à un calendrier en ligne (.ics).** Les sites de

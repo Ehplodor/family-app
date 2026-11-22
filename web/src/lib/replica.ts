@@ -281,6 +281,11 @@ export class Replica {
     await this.local([{ i: id, c: collection, t: this.clock.now(), d: 1 }]);
   }
 
+  /** Efface le contenu des champs indiqués ET supprime le document, en une seule opération. */
+  async erase(collection: string, id: string, blank: Record<string, unknown>) {
+    await this.local([{ i: id, c: collection, t: this.clock.now(), f: clean(blank), d: 1 }]);
+  }
+
   async removeMany(collection: string, ids: string[]) {
     await this.local(ids.map((i) => ({ i, c: collection, t: this.clock.now(), d: 1 as const })));
   }
