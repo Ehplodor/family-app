@@ -3,7 +3,7 @@ import { Cake, ChevronLeft, ChevronRight, Layers, Lock, Search, X } from 'lucide
 import { useCircles, useCollection, useMembers, useVault } from '../store';
 import { CirclesSheet, useDefaultGroups, VisibilityPicker } from './Circles';
 import { addMonths, capitalize, fmt, parseISODate, startOfWeek, addDays, toISODate, today } from '../dates';
-import { Avatar, Empty, Fab, Field, FieldGroup, MemberChips, Page, Sheet, confirmDelete } from '../ui';
+import { Avatar, Empty, Fab, Field, FieldGroup, MemberChips, Page, Sheet, confirmDelete, TimeInput } from '../ui';
 import type { Doc, Member } from '../store';
 import type { Birthday } from './Birthdays';
 import { occursOn, spanEnd, spanPart, timeLabel, type Repeat } from '../lib/recurrence';
@@ -450,10 +450,10 @@ function EventForm({
       {!ev.allDay && (
         <div className="row">
           <Field label="Début">
-            <input type="time" value={ev.start ?? ''} onChange={(e) => set({ start: e.target.value })} />
+            <TimeInput value={ev.start ?? ''} onChange={(v) => set({ start: v })} />
           </Field>
           <Field label={ev.endDate && ev.endDate > ev.date && (ev.repeat ?? 'none') === 'none' ? 'Fin (dernier jour)' : 'Fin'}>
-            <input type="time" value={ev.end ?? ''} onChange={(e) => set({ end: e.target.value })} />
+            <TimeInput value={ev.end ?? ''} onChange={(v) => set({ end: v })} />
           </Field>
         </div>
       )}

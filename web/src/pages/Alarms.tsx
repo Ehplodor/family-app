@@ -18,7 +18,7 @@ import { alarmDoneAt, markAlarmDone } from '../lib/alarmState';
 import { useCollection, useDoc, useEngine, useLocalState, useMe, useNotifier, type Doc } from '../store';
 import { SAVER_LABEL, Screensaver, type SaverKind } from './Screensaver';
 import { navigate } from '../router';
-import { Empty, Fab, Field, FieldGroup, Page, Sheet, confirmDelete } from '../ui';
+import { Empty, Fab, Field, FieldGroup, Page, Sheet, confirmDelete, TimeInput } from '../ui';
 import { VisibleBy, useItemGroups, withGroups } from './Circles';
 
 export type { Alarm };
@@ -260,7 +260,7 @@ function AlarmForm({
       }}
     >
       <Field label="Heure">
-        <input type="time" required className="alarm-time-input" value={a.time} onChange={(e) => set({ time: e.target.value })} />
+        <TimeInput required className="alarm-time-input" value={a.time} onChange={(v) => set({ time: v })} />
       </Field>
       <FieldGroup label={`Répéter : ${daysLabel(a.days).toLowerCase()}`}>
         <div className="chips">

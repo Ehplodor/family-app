@@ -3,7 +3,7 @@ import { CalendarClock } from 'lucide-react';
 import { useCollection, useEngine, type Doc } from '../../store';
 import { slotsOn, weekType, type SchoolProfile, type Slot } from '../../lib/school';
 import { addDays, startOfWeek, toISODate, today } from '../../dates';
-import { Empty, Fab, Field, Sheet, confirmDelete } from '../../ui';
+import { Empty, Fab, Field, Sheet, confirmDelete, TimeInput } from '../../ui';
 import { subjectColor, subjectsOf, useSchool } from './shared';
 
 const DAYS = [
@@ -137,10 +137,10 @@ function SlotForm({
       </Field>
       <div className="row">
         <Field label="Début">
-          <input type="time" value={x.start} onChange={(e) => set({ start: e.target.value })} />
+          <TimeInput required value={x.start} onChange={(v) => set({ start: v })} />
         </Field>
         <Field label="Fin">
-          <input type="time" value={x.end} onChange={(e) => set({ end: e.target.value })} />
+          <TimeInput required value={x.end} onChange={(v) => set({ end: v })} />
         </Field>
       </div>
       <Field label="Matière">

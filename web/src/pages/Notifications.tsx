@@ -6,7 +6,7 @@ import { isIOS, isStandalone, prefsOf, pushSupported } from '../lib/notify';
 import { RELAY_URL } from '../lib/sync';
 import { useCollection, useDoc, useEngine, useMe, useNotifier } from '../store';
 import { fmt } from '../dates';
-import { Field, Page } from '../ui';
+import { Field, Page, TimeInput } from '../ui';
 
 function Toggle({ label, hint, checked, onChange }: { label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -149,18 +149,18 @@ export function NotificationsPage() {
         <p className="muted">Pendant ces heures, les notifications non urgentes attendent votre réveil. Les rendez-vous et tâches à heure fixe passent toujours.</p>
         <div className="row">
           <Field label="De">
-            <input type="time" value={prefs.quietStart} onChange={(e) => set({ quietStart: e.target.value })} />
+            <TimeInput required value={prefs.quietStart} onChange={(v) => set({ quietStart: v })} />
           </Field>
           <Field label="À">
-            <input type="time" value={prefs.quietEnd} onChange={(e) => set({ quietEnd: e.target.value })} />
+            <TimeInput required value={prefs.quietEnd} onChange={(v) => set({ quietEnd: v })} />
           </Field>
         </div>
         <div className="row">
           <Field label="Rappel tâches">
-            <input type="time" value={prefs.taskHour} onChange={(e) => set({ taskHour: e.target.value })} />
+            <TimeInput required value={prefs.taskHour} onChange={(v) => set({ taskHour: v })} />
           </Field>
           <Field label="Résumé du matin">
-            <input type="time" value={prefs.digest ?? ''} disabled={!prefs.digest} onChange={(e) => set({ digest: e.target.value })} />
+            <TimeInput value={prefs.digest ?? ''} disabled={!prefs.digest} onChange={(v) => set({ digest: v })} />
           </Field>
         </div>
       </div>
