@@ -424,7 +424,9 @@ export class GroupManager {
   /** Appareil (non retiré) le plus ancien d'un membre. */
   oldestDeviceOf(memberId: string): string | null {
     const mine = (this.replica.list<Device>('devices') as DeviceRow[]).filter((d) => d.memberId === memberId && !d.revoked && d.pub);
-    mine.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.id < b.id ? -1 : 1));
+    // Ordre de création exact (horloge logique hybride, unique par appareil), pas seulement la date à la milliseconde.
+    const clock = new Map(this.replica.allRecords((r) => r.c === 'devices').map((r) => [r.id, r.cbt ?? r.ct]));
+    mine.sort((a, b) => (clock.get(a.id) ?? '').localeCompare(clock.get(b.id) ?? '') || (a.id < b.id ? -1 : 1));
     return mine[0]?.id ?? null;
   }
 
