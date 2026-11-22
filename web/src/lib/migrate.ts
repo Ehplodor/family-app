@@ -114,6 +114,12 @@ export async function rememberOldSpace(engine: Engine) {
 let running = false;
 let again = false;
 /**
+ * Entrées déjà tentées pendant cette ouverture de l'appli (cercle|appareil) : si une entrée ne prend pas
+ * (appareil déclaré perdu, appartenant à un autre membre…), on ne la refait pas à chaque recalcul, ce qui
+ * relancerait un recalcul, sans fin. Nouvel essai à la prochaine ouverture.
+ */
+const tried = new Set<string>();
+/**
  * À chaque changement, une fois dans le nouvel espace : l'admin fait entrer les anciens appareils qui se
  * présentent ; chacun republie ses données dès qu'il peut écrire dans « Famille ».
  */
@@ -135,9 +141,11 @@ export async function continueMigration(engine: Engine) {
       if (fam?.isAdmin) {
         const holders = v.holders(famId);
         for (const [id, keys] of v.allDevices()) {
-          if (holders.has(id) || id === engine.deviceId) continue;
+          if (holders.has(id) || id === engine.deviceId || v.isLost(id) || tried.has(`${famId}|${id}`)) continue;
           const old = m.info.devices.find((d) => jwkId(d.pub) === jwkId(keys.pub));
-          if (old) await v.admit(famId, old.member, id).catch((err) => console.warn('Migration : entrée', err));
+          if (!old) continue;
+          tried.add(`${famId}|${id}`);
+          await v.admit(famId, old.member, id).catch((err) => console.warn('Migration : entrée', err));
         }
       }
     }

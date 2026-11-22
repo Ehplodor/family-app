@@ -15,6 +15,7 @@ import { MigrationScreen } from './pages/Migration';
 import { NotificationsPage } from './pages/Notifications';
 import { AboutPage } from './pages/About';
 import { AlarmWatcher } from './pages/Alarms';
+import { ErrorBoundary } from './ErrorBoundary';
 
 function BottomNav({ active }: { active: 'home' | 'apps' }) {
   return (
@@ -138,7 +139,9 @@ function Gate() {
 export function App() {
   return (
     <AppProvider>
-      <Gate />
+      <ErrorBoundary>
+        <Gate />
+      </ErrorBoundary>
     </AppProvider>
   );
 }

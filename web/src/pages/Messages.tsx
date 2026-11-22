@@ -9,6 +9,7 @@ import { Avatar, Empty, Page } from '../ui';
 export type Message = { text: string };
 
 const LAST_SEEN_KEY = 'messages.lastSeen';
+const LAST_CONV_KEY = 'messages.lastConversation';
 
 /**
  * Une conversation par cercle : ses messages ne sont chiffrés que pour lui. Le cercle partagé le plus large
@@ -43,20 +44,32 @@ export function MessagesPage({ params = [] }: { params?: string[] }) {
   const [text, setText] = useState('');
   const [error, setError] = useState('');
   const bottom = useRef<HTMLDivElement>(null);
-  const circle = circles.find((g) => g.id === params[0]) ?? circles[0] ?? null;
+  // Sans conversation précisée : la dernière ouverte sur cet appareil (sinon l'onglet par défaut changerait
+  // dès qu'un autre cercle compte plus de membres, et on croirait des messages disparus).
+  const [lastConv, setLastConv] = useLocalState<string>(LAST_CONV_KEY, '');
+  const circle = circles.find((g) => g.id === params[0]) ?? circles.find((g) => g.id === lastConv) ?? circles[0] ?? null;
   const convId = circle?.id ?? '';
+  useEffect(() => {
+    if (convId && convId !== lastConv) setLastConv(convId);
+  }, [convId, lastConv, setLastConv]);
   const docs = circle ? privateOf(circle.id) : [];
   const canWrite = !!circle?.writable;
   const messages = { docs, loaded: true };
 
   const last = docs[docs.length - 1];
+  const lastId = last?.id;
+  const lastAt = last?.createdAt;
+  // On descend en bas seulement à l'ouverture d'une conversation ou à l'arrivée d'un nouveau message (pas à
+  // chaque synchronisation : on ne pourrait plus remonter lire les anciens messages).
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: 'end' });
-    if (!last) return;
+  }, [lastId, convId]);
+  useEffect(() => {
+    if (!lastAt) return;
     // Dernier message lu, par conversation (l'ancien format, une simple date, vaut pour la famille).
     const prev = typeof lastSeen === 'string' ? { '': lastSeen } : lastSeen;
-    if (prev[convId] !== last.createdAt) setLastSeen({ ...prev, [convId]: last.createdAt });
-  }, [last, convId, lastSeen, setLastSeen]);
+    if (prev[convId] !== lastAt) setLastSeen({ ...prev, [convId]: lastAt });
+  }, [lastAt, convId, lastSeen, setLastSeen]);
 
   const send = async (e: React.FormEvent) => {
     e.preventDefault();

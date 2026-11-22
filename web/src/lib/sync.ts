@@ -35,6 +35,10 @@ export function chunkBySize<T>(items: T[], max = MAX_BATCH_CHARS): T[][] {
   return out;
 }
 const SNAPSHOT_EVERY = 300;
+/** Délai de réponse du relais à un « ping » au-delà duquel la connexion est considérée comme morte. */
+const LIVENESS_TIMEOUT = 5_000;
+/** Intervalle des « ping » (le relais répond « pong ») ; sans aucune réponse pendant 2 intervalles : reconnexion. */
+const PING_EVERY = 25_000;
 
 export async function relayFetch(keys: CircleKeys, path: string, init: RequestInit = {}): Promise<Response> {
   const res = await fetch(`${RELAY_URL}/c/${keys.circleId}${path}`, {
@@ -79,6 +83,10 @@ export class SyncClient {
   private statusListeners = new Set<(s: SyncStatus) => void>();
   private readyWaiters: (() => void)[] = [];
   private registered = false;
+  /** Dernier paquet reçu du relais (y compris la réponse à un « ping ») : sert à repérer une connexion morte. */
+  private lastRx = 0;
+  /** Abandonne la connexion en cours (morte sans prévenir) et en ouvre une nouvelle. */
+  private dropCurrent: (() => void) | null = null;
 
   constructor(
     readonly keys: CircleKeys,
@@ -125,8 +133,25 @@ export class SyncClient {
     this.ws?.close();
   }
 
+  /**
+   * Retour au premier plan (par exemple en touchant une notification). Android coupe souvent la connexion
+   * d'une appli en arrière-plan SANS la fermer : elle paraît ouverte mais ne reçoit plus rien. On vérifie
+   * donc qu'elle répond (« ping ») ; sans réponse rapide, on en ouvre une nouvelle.
+   */
   private onVisible = () => {
-    if (document.visibilityState === 'visible' && (!this.ws || this.ws.readyState > 1)) this.reconnectNow();
+    if (document.visibilityState !== 'visible' || this.stopped) return;
+    const ws = this.ws;
+    if (!ws || ws.readyState > 1) return this.reconnectNow();
+    if (ws.readyState !== 1) return;
+    const sent = Date.now();
+    try {
+      ws.send('{"t":"ping"}');
+    } catch {
+      /* connexion déjà fermée : traité ci-dessous */
+    }
+    setTimeout(() => {
+      if (this.ws === ws && this.lastRx < sent) this.dropCurrent?.();
+    }, LIVENESS_TIMEOUT);
   };
   private reconnectNow = () => {
     if (this.stopped) return;
@@ -156,23 +181,38 @@ export class SyncClient {
       this.retry = 1000;
     };
     // Les messages sont traités strictement dans l'ordre.
+    this.lastRx = Date.now();
     let chain = Promise.resolve();
     ws.onmessage = (e) => {
+      if (this.ws !== ws) return;
+      this.lastRx = Date.now();
       chain = chain.then(() => this.handle(JSON.parse(e.data))).catch((err) => console.warn('synchro', err));
     };
-    ws.onclose = (e) => {
+    const lost = (code?: number) => {
       if (this.ws !== ws) return;
+      this.ws = null;
+      this.dropCurrent = null;
       this.ready = false;
       if (this.ping) clearInterval(this.ping);
+      this.ping = null;
       this.inflight.splice(0).forEach((f) => f.reject(new Error('Connexion perdue')));
       this.flushing = false;
-      if (e.code === 4003) {
+      if (code === 4003) {
         this.setStatus('denied');
         return;
       }
       if (this.status !== 'closed') this.setStatus('offline');
       this.scheduleReconnect();
     };
+    this.dropCurrent = () => {
+      lost();
+      try {
+        ws.close();
+      } catch {
+        /* déjà fermée */
+      }
+    };
+    ws.onclose = (e) => lost(e.code);
   }
 
   private scheduleReconnect() {
@@ -231,7 +271,12 @@ export class SyncClient {
         await this.setSeq(m.seq ?? 0);
         this.setStatus(m.closed ? 'closed' : 'online');
         this.readyWaiters.splice(0).forEach((r) => r());
-        this.ping = setInterval(() => this.ws?.readyState === 1 && this.ws.send('{"t":"ping"}'), 25_000);
+        if (this.ping) clearInterval(this.ping);
+        this.ping = setInterval(() => {
+          // Plus rien reçu depuis deux « ping » : connexion morte sans avoir été fermée.
+          if (Date.now() - this.lastRx > 2 * PING_EVERY + LIVENESS_TIMEOUT) return this.dropCurrent?.();
+          if (this.ws?.readyState === 1) this.ws.send('{"t":"ping"}');
+        }, PING_EVERY);
         this.flush();
         this.maybeSnapshot();
         break;
