@@ -168,9 +168,10 @@ function ShoppingForm({ recipes, onDone }: { recipes: Doc<Recipe>[]; onDone: () 
   const submit = async () => {
     let target = listId;
     if (!target) target = (await lists.create({ name: 'Courses', color: '#2D9CDB' })).id;
+    const groups = lists.docs.find((l) => l.id === target)?.groups;
     const existing = new Set(items.docs.filter((i) => i.listId === target && !i.done).map((i) => i.text.toLowerCase()));
     await Promise.all(
-      checked.filter((t) => !existing.has(t.toLowerCase())).map((text) => items.create({ listId: target, text, done: false })),
+      checked.filter((t) => !existing.has(t.toLowerCase())).map((text) => items.create({ listId: target, text, done: false, groups })),
     );
     onDone();
     navigate(`/m/lists/${target}`);

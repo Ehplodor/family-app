@@ -4,7 +4,7 @@ import type { Device } from '../lib/engine';
 import { DEFAULT_PREFS, type NotifPrefs } from '../lib/reminders';
 import { isIOS, isStandalone, prefsOf, pushSupported } from '../lib/notify';
 import { RELAY_URL } from '../lib/sync';
-import { useCalendarEvents, useCollection, useDoc, useEngine, useMe, useNotifier } from '../store';
+import { useCollection, useDoc, useEngine, useMe, useNotifier } from '../store';
 import { fmt } from '../dates';
 import { Field, Page } from '../ui';
 
@@ -24,20 +24,20 @@ export function NotificationsPage() {
   const engine = useEngine();
   const notifier = useNotifier();
   const me = useMe();
-  const myDevice = useDoc<Device>('devices', engine.deviceId);
+  const myDevice = useDoc<Device>('deviceInfo', engine.deviceId);
   useCollection('prefs');
   const prefs = prefsOf(engine, me.member.id);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [busy, setBusy] = useState(false);
   // Recalcule l'aperçu quand les données changent.
-  const events = useCalendarEvents();
+  const events = useCollection<{ title: string; date: string }>('events').docs;
   const tasks = useCollection('tasks').docs;
   const birthdays = useCollection('birthdays').docs;
   const meals = useCollection('meals').docs;
   const upcoming = useMemo(() => notifier.upcomingForMe().slice(0, 8), [notifier, events, tasks, birthdays, meals, prefs]);
 
-  const set = (patch: Partial<NotifPrefs>) => engine.replica.upsert<NotifPrefs>('prefs', me.member.id, patch);
+  const set = (patch: Partial<NotifPrefs>) => engine.data.upsert<NotifPrefs>('prefs', me.member.id, patch);
   const run = async (fn: () => Promise<void>, ok?: string) => {
     setBusy(true);
     setError('');

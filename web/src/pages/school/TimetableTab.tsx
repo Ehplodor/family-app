@@ -35,7 +35,7 @@ export function TimetableTab({ childId }: { childId: string }) {
               key={w}
               className={`btn small ${wt === w ? 'primary' : ''}`}
               onClick={() =>
-                engine.replica.upsert<SchoolProfile>('schoolProfiles', childId, {
+                engine.data.upsert<SchoolProfile>('schoolProfiles', childId, {
                   weekARef: w === 'A' ? monday : toISODate(addDays(startOfWeek(new Date()), -7)),
                 })
               }

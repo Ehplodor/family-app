@@ -4,6 +4,7 @@ import { useCollection } from '../store';
 import { addMonths, capitalize, fmt, today } from '../dates';
 import { Empty, Fab, Field, Page, Sheet, confirmDelete } from '../ui';
 import type { Doc } from '../store';
+import { VisibleBy, useItemGroups, withGroups } from './Circles';
 
 export type Entry = { label: string; amount: number; type: 'expense' | 'income'; category: string; date: string };
 
@@ -121,6 +122,7 @@ export function BudgetPage() {
 }
 
 function EntryForm({ initial, onSubmit, onDelete }: { initial?: Entry; onSubmit: (e: Entry) => void; onDelete?: () => void }) {
+  const [groups, setGroups] = useItemGroups(initial);
   const [e, setE] = useState({
     label: initial?.label ?? '',
     amount: initial ? String(initial.amount).replace('.', ',') : '',
@@ -136,7 +138,7 @@ function EntryForm({ initial, onSubmit, onDelete }: { initial?: Entry; onSubmit:
       className="form"
       onSubmit={(ev) => {
         ev.preventDefault();
-        if (valid) onSubmit({ ...e, label: e.label.trim(), amount: Math.round(amount * 100) / 100 });
+        if (valid) onSubmit(withGroups({ ...e, label: e.label.trim(), amount: Math.round(amount * 100) / 100 }, groups));
       }}
     >
       <div className="segmented">
@@ -165,6 +167,7 @@ function EntryForm({ initial, onSubmit, onDelete }: { initial?: Entry; onSubmit:
           ))}
         </select>
       </Field>
+      <VisibleBy value={groups} onChange={setGroups} />
       <div className="form-actions">
         {onDelete && (
           <button type="button" className="btn danger" onClick={onDelete}>

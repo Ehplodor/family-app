@@ -210,6 +210,7 @@ export const RULES: Record<string, Rule> = {
   cards: 'all',
   schoolProfiles: 'owner',
   members: 'owner',
+  deviceInfo: 'owner',
   prefs: 'owner',
   settings: 'all',
 };

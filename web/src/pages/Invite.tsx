@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import qrcode from 'qrcode-generator';
 import { Check, Copy, ShieldCheck, Share2 } from 'lucide-react';
-import { useEngine } from '../store';
+import { useCircles, useEngine, useMembers } from '../store';
 import { approveJoin, createInvitation, pollJoinRequest, requestSafetyCode, type Invitation, type JoinRequest } from '../lib/invite';
 import { RELAY_URL } from '../lib/sync';
 import { Empty } from '../ui';
@@ -22,6 +22,18 @@ export function InvitePanel({ onDone }: { onDone: () => void }) {
   const [error, setError] = useState('');
   const [now, setNow] = useState(Date.now());
   const [copied, setCopied] = useState(false);
+  const circles = useCircles();
+  const { byId } = useMembers();
+  // Qui arrive : un autre de mes appareils, une nouvelle personne, ou un nouvel appareil d'une personne de mes cercles.
+  const adminOf = circles.filter((c) => c.isAdmin && !c.personal);
+  const people = [...new Set(adminOf.flatMap((c) => c.members))].filter((m) => m !== engine.memberId);
+  const [who, setWho] = useState<'me' | 'new' | string>('me');
+  const [chosen, setChosen] = useState<string[]>([]);
+  useEffect(() => {
+    if (who === 'new') setChosen(adminOf.map((c) => c.id));
+    else if (who !== 'me') setChosen(adminOf.filter((c) => c.members.includes(who)).map((c) => c.id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [who]);
 
   useEffect(() => {
     createInvitation().then(setInv);
@@ -60,7 +72,7 @@ export function InvitePanel({ onDone }: { onDone: () => void }) {
       <div className="form center">
         <ShieldCheck size={56} className="accent-text" />
         <p>
-          <strong>{req?.label}</strong> a reçu la clé du cercle. La synchronisation commence.
+          <strong>{req?.label}</strong> a reçu ses accès. La synchronisation commence.
         </p>
         <button className="btn primary" onClick={onDone}>
           Terminé
@@ -80,6 +92,42 @@ export function InvitePanel({ onDone }: { onDone: () => void }) {
           <div className="safety">{req.code}</div>
           <p className="muted">Vérifiez que le nouvel appareil affiche exactement les mêmes émojis.</p>
         </div>
+        <div className="chips">
+          <button type="button" className={`chip ${who === 'me' ? 'on' : ''}`} onClick={() => setWho('me')}>
+            Un autre de mes appareils
+          </button>
+          {adminOf.length > 0 && (
+            <button type="button" className={`chip ${who === 'new' ? 'on' : ''}`} onClick={() => setWho('new')}>
+              Une nouvelle personne
+            </button>
+          )}
+          {people.map((m) => (
+            <button key={m} type="button" className={`chip ${who === m ? 'on' : ''}`} onClick={() => setWho(m)}>
+              Appareil de {byId(m)?.name ?? '?'}
+            </button>
+          ))}
+        </div>
+        {who !== 'me' && (
+          <>
+            <p className="muted small">Cercles où la faire entrer (vous en êtes l'admin) :</p>
+            <div className="chips">
+              {adminOf.map((c) => {
+                const on = chosen.includes(c.id);
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    className={`chip ${on ? 'on' : ''}`}
+                    style={on ? { background: c.color, borderColor: c.color } : { borderColor: c.color }}
+                    onClick={() => setChosen(on ? chosen.filter((x) => x !== c.id) : [...chosen, c.id])}
+                  >
+                    {c.name}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
         {error && <p className="error">{error}</p>}
         <div className="form-actions">
           <button className="btn danger" onClick={onDone}>
@@ -87,11 +135,11 @@ export function InvitePanel({ onDone }: { onDone: () => void }) {
           </button>
           <button
             className="btn primary grow"
-            disabled={state === 'approving'}
+            disabled={state === 'approving' || (who !== 'me' && !chosen.length)}
             onClick={async () => {
               setState('approving');
               try {
-                await approveJoin(engine, inv, req);
+                await approveJoin(engine, inv, req, who === 'me' ? 'me' : { member: who === 'new' ? undefined : who, circles: chosen });
                 setState('done');
               } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);

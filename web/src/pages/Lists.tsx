@@ -4,6 +4,7 @@ import { useCollection, useMe, useMembers, type Collection, type Doc } from '../
 import { navigate, goBack } from '../router';
 import { ColorPicker, Empty, Fab, Field, FieldGroup, Page, Sheet, confirmDelete } from '../ui';
 import { LIST_KINDS, groupByAisle, itemStatus, listKind, progress, statusPatch, type ItemStatus, type ListKind } from '../lib/lists';
+import { VisibleBy, useItemGroups, withGroups } from './Circles';
 
 // `kind` et `status` sont facultatifs : les listes créées avant leur ajout restent des listes à cocher.
 export type List = { name: string; color: string; kind?: ListKind };
@@ -28,6 +29,7 @@ export function ListsPage({ params }: { params: string[] }) {
 }
 
 function ListForm({ initial, onSubmit }: { initial?: List; onSubmit: (l: List) => void }) {
+  const [groups, setGroups] = useItemGroups(initial);
   const [name, setName] = useState(initial?.name ?? '');
   const [color, setColor] = useState(initial?.color ?? '#2D9CDB');
   const [kind, setKind] = useState<ListKind>(initial ? listKind(initial) : 'todo');
@@ -36,7 +38,7 @@ function ListForm({ initial, onSubmit }: { initial?: List; onSubmit: (l: List) =
       className="form"
       onSubmit={(e) => {
         e.preventDefault();
-        if (name.trim()) onSubmit({ name: name.trim(), color, kind });
+        if (name.trim()) onSubmit(withGroups({ name: name.trim(), color, kind }, groups));
       }}
     >
       <FieldGroup label="Type">
@@ -64,6 +66,7 @@ function ListForm({ initial, onSubmit }: { initial?: List; onSubmit: (l: List) =
       <button className="btn primary" disabled={!name.trim()}>
         Enregistrer
       </button>
+    <VisibleBy value={groups} onChange={setGroups} />
     </form>
   );
 }
@@ -145,7 +148,8 @@ function ListDetail({ id }: { id: string }) {
   const add = (e: FormEvent) => {
     e.preventDefault();
     const parts = (multi ? text.split(',') : [text]).map((s) => s.trim()).filter(Boolean);
-    parts.forEach((t) => items.create({ listId: id, text: t, done: false }));
+    // Les éléments sont visibles par les mêmes cercles que leur liste.
+    parts.forEach((t) => items.create({ listId: id, text: t, done: false, groups: list?.groups }));
     setText('');
   };
   const check = (i: Doc<ListItem>) => items.update(i.id, { done: true, doneBy: me.member.id });

@@ -5,6 +5,7 @@ import { relativeDay, today } from '../dates';
 import { nextDue, type TaskRepeat } from '../lib/recurrence';
 import { Avatar, Empty, Fab, Field, FieldGroup, MemberChips, Page, Sheet, confirmDelete } from '../ui';
 import type { Doc } from '../store';
+import { VisibleBy, useItemGroups, withGroups } from './Circles';
 
 export type { TaskRepeat };
 export type Task = {
@@ -147,6 +148,7 @@ export function TasksPage() {
 }
 
 function TaskForm({ initial, onSubmit, onDelete }: { initial?: Task; onSubmit: (t: Task) => void; onDelete?: () => void }) {
+  const [groups, setGroups] = useItemGroups(initial);
   const { members } = useMembers();
   const [t, setT] = useState<Task>(initial ?? { title: '', assigneeId: null, due: today(), repeat: 'none' });
   const set = (patch: Partial<Task>) => setT((x) => ({ ...x, ...patch }));
@@ -155,7 +157,7 @@ function TaskForm({ initial, onSubmit, onDelete }: { initial?: Task; onSubmit: (
       className="form"
       onSubmit={(e) => {
         e.preventDefault();
-        if (t.title.trim()) onSubmit({ ...t, title: t.title.trim() });
+        if (t.title.trim()) onSubmit(withGroups({ ...t, title: t.title.trim() }, groups));
       }}
     >
       <Field label="Tâche">
@@ -188,6 +190,7 @@ function TaskForm({ initial, onSubmit, onDelete }: { initial?: Task; onSubmit: (
           onChange={(ids) => set({ assigneeId: ids[0] ?? null })}
         />
       </FieldGroup>
+      <VisibleBy value={groups} onChange={setGroups} />
       <div className="form-actions">
         {onDelete && (
           <button type="button" className="btn danger" onClick={onDelete}>

@@ -142,7 +142,7 @@ function AddChild() {
           <p className="muted">Indiquez qui est un enfant :</p>
           <div className="chips">
             {others.map((m) => (
-              <button key={m.id} className="chip" style={{ borderColor: m.color }} onClick={() => engine.replica.update<Member>('members', m.id, { kind: 'child' })}>
+              <button key={m.id} className="chip" style={{ borderColor: m.color }} onClick={() => engine.data.update<Member>('members', m.id, { kind: 'child' })}>
                 <Avatar member={m} size={20} /> {m.name}
               </button>
             ))}
@@ -153,7 +153,7 @@ function AddChild() {
         className="card form"
         onSubmit={(e) => {
           e.preventDefault();
-          if (name.trim()) engine.replica.create<Member>('members', { name: name.trim(), color, kind: 'child' });
+          if (name.trim()) engine.data.create<Member>('members', { name: name.trim(), color, kind: 'child' });
         }}
       >
         <h3>Ajouter un enfant</h3>

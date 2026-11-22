@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Lock, MessageSquareText, Send, Users } from 'lucide-react';
-import { useCollection, useGroups, useLocalState, useMe, useMembers } from '../store';
+import { useCircles, useCollection, useLocalState, useMe, useMembers } from '../store';
 import { navigate } from '../router';
-import { PRIVATE_MESSAGES } from '../lib/groupManager';
 import { groupLabel } from './Circles';
 import { relativeDay, timeOf, toISODate } from '../dates';
 import { Avatar, Empty, Page } from '../ui';
@@ -12,32 +11,31 @@ export type Message = { text: string };
 const LAST_SEEN_KEY = 'messages.lastSeen';
 
 /**
- * Conversations : celle de toute la famille (collection `messages`, comme avant) et une par cercle restreint
- * (« Parents »…), dont les messages sont chiffrés pour le cercle seulement (collection `privateMessages`).
+ * Une conversation par cercle : ses messages ne sont chiffrés que pour lui. Le cercle partagé le plus large
+ * (la famille, en général) vient en premier. « Moi seul » a aussi la sienne : notes, liens, idées à garder
+ * pour soi (synchronisées entre ses appareils).
  */
 function useConversations() {
-  const groups = useGroups();
-  const family = useCollection<Message>('messages').docs;
-  const all = groups.privateDocs<Message>(PRIVATE_MESSAGES);
-  // « Moi seul » a aussi sa conversation : notes, liens, idées à garder pour soi (synchronisées entre ses appareils).
-  const circles = groups.list().filter((g) => g.access === 'ok' || all.some((m) => m.groups.includes(g.id)));
-  return { family, circles, privateOf: (id: string) => all.filter((m) => m.groups[0] === id) };
+  const all = useCollection<Message>('messages').docs;
+  const circles = [...useCircles()]
+    .filter((g) => !g.outdated || all.some((m) => m.groups[0] === g.id))
+    .sort((a, b) => (a.personal ? 1 : 0) - (b.personal ? 1 : 0) || b.members.length - a.members.length);
+  return { circles, privateOf: (id: string) => all.filter((m) => m.groups[0] === id) };
 }
 
 export function MessagesSummary() {
-  const { family, circles, privateOf } = useConversations();
+  const { circles, privateOf } = useConversations();
   const me = useMe();
   const [lastSeen] = useLocalState<Record<string, string> | string>(LAST_SEEN_KEY, '');
   const seen = (id: string) => (typeof lastSeen === 'string' ? (id === '' ? lastSeen : '') : (lastSeen[id] ?? ''));
   const count = (docs: { createdAt: string; createdBy: string | null }[], id: string) =>
     docs.filter((m) => m.createdAt > seen(id) && m.createdBy !== me.member.id).length;
-  const unread = count(family, '') + circles.reduce((n, g) => n + count(privateOf(g.id), g.id), 0);
+  const unread = circles.reduce((n, g) => n + count(privateOf(g.id), g.id), 0);
   return <>{unread ? `${unread} nouveau${unread > 1 ? 'x' : ''} message${unread > 1 ? 's' : ''}` : 'Aucun nouveau message'}</>;
 }
 
 export function MessagesPage({ params = [] }: { params?: string[] }) {
-  const familyMessages = useCollection<Message>('messages');
-  const groups = useGroups();
+  const messagesCol = useCollection<Message>('messages');
   const { circles, privateOf } = useConversations();
   const me = useMe();
   const { byId } = useMembers();
@@ -45,10 +43,10 @@ export function MessagesPage({ params = [] }: { params?: string[] }) {
   const [text, setText] = useState('');
   const [error, setError] = useState('');
   const bottom = useRef<HTMLDivElement>(null);
-  const circle = circles.find((g) => g.id === params[0]) ?? null;
+  const circle = circles.find((g) => g.id === params[0]) ?? circles[0] ?? null;
   const convId = circle?.id ?? '';
-  const docs = circle ? privateOf(circle.id) : familyMessages.docs;
-  const canWrite = !circle || circle.access === 'ok';
+  const docs = circle ? privateOf(circle.id) : [];
+  const canWrite = !!circle?.writable;
   const messages = { docs, loaded: true };
 
   const last = docs[docs.length - 1];
@@ -67,8 +65,7 @@ export function MessagesPage({ params = [] }: { params?: string[] }) {
     setText('');
     setError('');
     try {
-      if (circle) await groups.sendMessage(circle.id, t);
-      else await familyMessages.create({ text: t });
+      if (circle) await messagesCol.create({ text: t, groups: [circle.id] });
     } catch (err) {
       setText(t);
       setError((err as Error).message);
@@ -78,11 +75,8 @@ export function MessagesPage({ params = [] }: { params?: string[] }) {
   let previousDay = '';
   return (
     <Page title="Messages" className="chat-page">
-      {circles.length > 0 && (
+      {circles.length > 1 && (
         <div className="chips chat-tabs">
-          <button type="button" className={`chip ${!circle ? 'on' : ''}`} onClick={() => navigate('/m/messages')}>
-            <Users size={14} /> Toute la famille
-          </button>
           {circles.map((g) => (
             <button
               key={g.id}
@@ -91,7 +85,7 @@ export function MessagesPage({ params = [] }: { params?: string[] }) {
               style={circle?.id === g.id ? { background: g.color, borderColor: g.color } : { borderColor: g.color }}
               onClick={() => navigate(`/m/messages/${g.id}`)}
             >
-              <Lock size={14} /> {groupLabel(g)}
+              {g.personal ? <Lock size={14} /> : <Users size={14} />} {groupLabel(g)}
             </button>
           ))}
         </div>
@@ -99,11 +93,9 @@ export function MessagesPage({ params = [] }: { params?: string[] }) {
       <div className="chat">
         {messages.loaded && !messages.docs.length && (
           <Empty icon={<MessageSquareText size={48} />}>
-            {circle
-              ? circle.personal
-                ? 'Vos notes personnelles : visibles seulement sur vos appareils autorisés (chiffrées). Pratique pour un lien, une idée, une liste à garder pour soi.'
-                : `Conversation du cercle « ${circle.name} » : seuls ses membres la lisent (chiffrée pour eux).`
-              : 'Le fil de discussion de la famille. Dites bonjour 👋'}
+            {circle?.personal
+              ? 'Vos notes personnelles : visibles seulement sur vos appareils autorisés (chiffrées). Pratique pour un lien, une idée, une liste à garder pour soi.'
+              : `Conversation du cercle « ${circle?.name ?? ''} » : seuls ses membres la lisent (chiffrée pour eux). Dites bonjour 👋`}
           </Empty>
         )}
         {messages.docs.map((m, i) => {
@@ -137,7 +129,7 @@ export function MessagesPage({ params = [] }: { params?: string[] }) {
         <input
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder={circle ? (circle.personal ? 'Note pour moi…' : `Message pour « ${circle.name} »…`) : 'Votre message…'}
+          placeholder={circle?.personal ? 'Note pour moi…' : `Message pour « ${circle?.name ?? ''} »…`}
           enterKeyHint="send"
           disabled={!canWrite}
         />

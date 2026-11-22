@@ -3,6 +3,7 @@ import { Clock, CookingPot, Pencil, Search, Trash2, Users } from 'lucide-react';
 import { useCollection } from '../store';
 import { navigate, goBack } from '../router';
 import { Empty, Fab, Field, Page, Sheet, confirmDelete } from '../ui';
+import { VisibleBy, useItemGroups, withGroups } from './Circles';
 
 export type Recipe = {
   title: string;
@@ -149,6 +150,7 @@ function RecipeDetail({ id }: { id: string }) {
 }
 
 function RecipeForm({ initial, onSubmit }: { initial?: Recipe; onSubmit: (r: Recipe) => void }) {
+  const [groups, setGroups] = useItemGroups(initial);
   const [r, setR] = useState<Recipe>(initial ?? { title: '', duration: '', servings: '', ingredients: '', steps: '', link: '' });
   const set = (patch: Partial<Recipe>) => setR((x) => ({ ...x, ...patch }));
   return (
@@ -156,7 +158,7 @@ function RecipeForm({ initial, onSubmit }: { initial?: Recipe; onSubmit: (r: Rec
       className="form"
       onSubmit={(e) => {
         e.preventDefault();
-        if (r.title.trim()) onSubmit({ ...r, title: r.title.trim() });
+        if (r.title.trim()) onSubmit(withGroups({ ...r, title: r.title.trim() }, groups));
       }}
     >
       <Field label="Titre">
@@ -182,6 +184,7 @@ function RecipeForm({ initial, onSubmit }: { initial?: Recipe; onSubmit: (r: Rec
       <button className="btn primary" disabled={!r.title.trim()}>
         Enregistrer
       </button>
+    <VisibleBy value={groups} onChange={setGroups} />
     </form>
   );
 }

@@ -23,11 +23,11 @@ export function JoinWaiting({ secret, onCancel }: { secret: Uint8Array<ArrayBuff
         setCode(r.code);
         timer = setInterval(async () => {
           try {
-            const circleSecret = await pollApproval(engine, keys);
-            if (circleSecret) {
+            const ok = await pollApproval(engine, keys);
+            if (ok) {
               clearInterval(timer);
               setPhase('syncing');
-              await engine.joinCircle(circleSecret);
+              await engine.joinCircle(ok.secret, ok.member);
             }
           } catch (err) {
             clearInterval(timer);

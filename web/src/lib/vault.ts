@@ -89,6 +89,8 @@ export type CircleInfo = {
   isAdmin: boolean;
   /** Version de la liste des membres. */
   rosterV: number;
+  /** Clé d'administration en vigueur (publique) et sa version chiffrée par la masterkey de l'admin. */
+  adminKey: { spub: JsonWebKey; wrapped: string };
   /** Clé en vigueur détenue (on peut écrire). */
   writable: boolean;
   /** Clés concurrentes : écriture bloquée jusqu'au renouvellement. */
@@ -499,6 +501,7 @@ export class Vault {
         admin: roster.admin,
         isAdmin: !!myMember && roster.admin === myMember,
         rosterV: roster.v,
+        adminKey: { spub: roster.spub, wrapped: roster.wrapped },
         writable: !!r.current && !outdated,
         conflict: !!r.conflict,
         outdated,
@@ -697,8 +700,8 @@ export class Vault {
   }
 
   private toItem<T>(g: Good): Item<T> {
-    const base = toDoc<T>({ id: g.i, c: g.c, f: {}, ct: g.d.t0, cb: g.d.o, cbt: g.d.t0 });
-    return { ...(g.d.d as T), ...base, updatedAt: base.updatedAt, groups: g.d.g, owner: g.d.o, createdBy: g.d.o } as Item<T>;
+    const base = toDoc<T>({ id: g.i, c: g.c, f: { _: { v: 0, t: g.s.at } }, ct: g.d.t0, cb: g.d.o, cbt: g.d.t0 });
+    return { ...(g.d.d as T), id: base.id, createdAt: base.createdAt, updatedAt: base.updatedAt, groups: g.d.g, owner: g.d.o, createdBy: g.d.o } as Item<T>;
   }
 
   /** Membre d'un appareil (d'après ses autorisations dans les cercles lisibles ici). */
@@ -737,6 +740,34 @@ export class Vault {
     if (rule === 'all') return true;
     if (rule === 'owner') return false;
     return !!fields && fields.every((f) => rule.includes(f));
+  }
+
+  /** Signature d'un document v2 par un appareil connu (pour les documents hors coffre : déménagement…). */
+  checkSigned(name: string, id: string, s: unknown): Promise<boolean> {
+    return this.signedBy(name, id, s);
+  }
+
+  /** Clés publiques d'un appareil reçues directement (demande d'entrée) : vérifiées par son identifiant. */
+  async pinDevice(id: string, keys: unknown): Promise<boolean> {
+    const doc = await deviceKeysOk(id, keys);
+    if (!doc) return false;
+    const local = await this.loadLocal();
+    if (!local.devpins[id]) {
+      local.devpins[id] = doc;
+      await this.save('devpins');
+    }
+    this.devices.set(id, local.devpins[id]);
+    return true;
+  }
+
+  /** Tous les appareils connus (clés vérifiées). */
+  allDevices(): [string, DeviceDoc][] {
+    return [...this.devices];
+  }
+
+  /** Clés publiques épinglées d'un appareil. */
+  deviceKeys(id: string): DeviceDoc | undefined {
+    return this.devices.get(id);
   }
 
   /* ------------------------------------------------------------ écriture */
@@ -811,13 +842,14 @@ export class Vault {
     return null;
   }
 
-  async create<T extends object>(name: string, data: T, opts: { groups?: string[]; id?: string } = {}): Promise<Item<T>> {
+  /** `t0` : date de création d'origine (reprise des données de l'ancien format). */
+  async create<T extends object>(name: string, data: T, opts: { groups?: string[]; id?: string; t0?: string } = {}): Promise<Item<T>> {
     const me = this.memberId();
     if (!me) throw new Error('Profil inconnu');
     const groups = [...new Set(opts.groups?.length ? opts.groups : this.defaultCircles())];
     if (!groups.length) throw new Error('Aucun cercle où enregistrer');
     const id = opts.id ?? randomId();
-    await this.write(name, id, { g: groups, o: me, t0: this.now(), d: clean(data) });
+    await this.write(name, id, { g: groups, o: me, t0: opts.t0 ?? this.now(), d: clean(data) });
     return this.get<T>(name, id)!;
   }
 
@@ -1065,6 +1097,12 @@ export class Vault {
   async declareLost(device: string, lost = true) {
     await this.put<LostP>('lost', device, { device, lost });
     await this.refresh();
+    // Retrouvé : les clés renouvelées entre-temps lui sont remises (par son membre, ou par l'admin).
+    if (!lost) {
+      const member = this.memberOf(device);
+      if (member && member === this.memberId()) await this.approveOwnDevice(device);
+      else if (member) for (const c of this.circles()) if (c.isAdmin && c.members.includes(member)) await this.admit(c.id, member, device);
+    }
     // L'appareil perdu ne doit plus rien lire de nouveau : nouvelle clé dans les cercles où il était autorisé.
     if (lost)
       for (const c of this.circles()) {

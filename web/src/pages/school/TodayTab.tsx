@@ -27,7 +27,7 @@ export function TodayTab({ childId }: { childId: string }) {
   const logWork = (h: Homework & { id: string }, minutes: number) => {
     const log = { ...(h.log ?? {}), [t]: (h.log?.[t] ?? 0) + minutes };
     const finished = Object.values(log).reduce((a, b) => a + b, 0) >= effortOf(h) && h.kind !== 'controle';
-    engine.replica.update<Homework>('homework', h.id, { log, ...(finished ? { done: true } : {}) });
+    engine.data.update<Homework>('homework', h.id, { log, ...(finished ? { done: true } : {}) });
   };
 
   return (

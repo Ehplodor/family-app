@@ -2,18 +2,20 @@
  * Notifications : abonnement push, envoi des rappels planifiés au relais,
  * notifications d'activité (messages, listes, agenda…) regroupées.
  *
- * Le contenu de chaque notification est chiffré avec la clé du cercle AVANT d'être confié
- * au relais : seul le service worker d'un appareil du cercle peut l'afficher.
+ * Le contenu de chaque notification est chiffré avec la clé de l'espace AVANT d'être confié
+ * au relais : seul le service worker d'un appareil de la famille peut l'afficher, et chaque rappel
+ * n'est envoyé qu'aux appareils autorisés dans un cercle qui voit l'élément.
  */
 import * as idb from './idb';
 import { fromB64url } from './bytes';
 import { sealJSON } from './crypto';
 import type { Device, Engine, Member } from './engine';
 import type { Op } from './replica';
+import { V2 } from './circles';
+import type { Item } from './vault';
 import { DEFAULT_SNOOZE, PUSH_FOLLOW_UPS, ringsBetween, type Alarm } from './alarms';
 import { computeReminders, DEFAULT_PREFS, outOfQuietHours, type NotifPrefs, type ReminderData } from './reminders';
 import { RELAY_URL, relayFetch } from './sync';
-import { PRIVATE_EVENTS, PRIVATE_MESSAGES } from './groupManager';
 
 export type PushPayload = {
   title: string;
@@ -37,7 +39,8 @@ export const isStandalone = () =>
   matchMedia('(display-mode: standalone)').matches || (navigator as unknown as { standalone?: boolean }).standalone === true;
 
 export function prefsOf(engine: Engine, memberId: string): NotifPrefs {
-  return { ...DEFAULT_PREFS, ...(engine.replica.get<Partial<NotifPrefs>>('prefs', memberId) ?? {}) };
+  const p = engine.vault.get<Partial<NotifPrefs>>('prefs', memberId);
+  return { ...DEFAULT_PREFS, ...(p && p.owner === memberId ? p : {}) };
 }
 
 /** Courte empreinte pour regrouper/remplacer les notifications côté service push (en-tête Topic). */
@@ -46,39 +49,36 @@ async function topicOf(tag: string) {
   return [...h.slice(0, 12)].map((b) => b.toString(36).padStart(2, '0')).join('').slice(0, 24);
 }
 
-/** Collections dont dépendent les rappels planifiés. */
-const SCHEDULE_SOURCES = ['events', 'birthdays', 'tasks', 'meals', 'members', 'schoolProfiles', 'timetable', 'homework', 'cards', 'alarms', 'groups'];
 /** Les réveils sont planifiés sur 7 jours (l'appli recalcule à chaque ouverture). */
 const ALARM_HORIZON = 7 * 86400_000;
 const MAX_SCHEDULE = 300; // limite du relais par appareil
+
+type Target = Device & { id: string };
 
 export class Notifier {
   private uploaded = new Map<string, string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private needAll = false;
-  private activity = new Map<string, { count: number; build: (n: number) => { payload: PushPayload; targets: string[]; urgent?: boolean } }>();
+  private activity = new Map<string, { count: number; build: (n: number) => { payload: PushPayload; targets: string[]; urgent?: boolean } | null }>();
   private activityTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Une modification locale d'un évènement privé ou d'un cercle attend d'être prise en compte. */
-  private privateLocalChange = false;
+  private localChange = false;
 
   constructor(private engine: Engine) {
     engine.replica.onChange((cols, local) => {
-      if (cols.has('devices') || cols.has('prefs') || SCHEDULE_SOURCES.some((c) => cols.has(c))) {
-        this.scheduleUpload(local);
-      }
+      if ([...cols].some((c) => c.startsWith(V2))) this.localChange ||= local;
     });
     const prevOnLocal = engine.replica.onLocalOps;
     engine.replica.onLocalOps = (ops) => {
       prevOnLocal?.(ops);
       this.onLocalOps(ops);
     };
-    // Évènements privés : déchiffrés en arrière-plan ; on replanifie quand ils changent.
-    let groupsVersion = engine.groups.getVersion();
-    engine.groups.subscribe(() => {
-      if (engine.groups.getVersion() === groupsVersion) return;
-      groupsVersion = engine.groups.getVersion();
-      this.scheduleUpload(this.privateLocalChange);
-      this.privateLocalChange = false;
+    // Les données sont vérifiées et déchiffrées par le coffre : on replanifie quand elles changent.
+    let version = engine.vault.getVersion();
+    engine.vault.subscribe(() => {
+      if (engine.vault.getVersion() === version) return;
+      version = engine.vault.getVersion();
+      this.scheduleUpload(this.localChange);
+      this.localChange = false;
     });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') this.flushActivity();
@@ -89,8 +89,15 @@ export class Notifier {
     return this.engine.circle;
   }
 
-  private devices(): (Device & { id: string })[] {
-    return this.engine.replica.list<Device>('devices').filter((d) => !d.revoked);
+  /** Appareils connus : informations publiées par leur membre, et appareil bien autorisé pour ce membre. */
+  private devices(): Target[] {
+    const v = this.engine.vault;
+    return v
+      .list<Device>('deviceInfo')
+      .filter((d) => !d.revoked && d.memberId === d.owner && v.memberOf(d.id) === d.owner && !v.isLost(d.id));
+  }
+  private device(id: string): Target | undefined {
+    return this.devices().find((d) => d.id === id);
   }
 
   private async encrypt(p: PushPayload) {
@@ -103,6 +110,11 @@ export class Notifier {
     return pushSupported() ? Notification.permission : 'unsupported';
   }
 
+  private async setPush(push: boolean) {
+    const v = this.engine.vault;
+    if (v.get('deviceInfo', this.engine.deviceId)) await v.update<Device>('deviceInfo', this.engine.deviceId, { push });
+  }
+
   async enable() {
     if (!pushSupported()) throw new Error('Notifications non prises en charge par ce navigateur');
     if (!RELAY_URL || !this.circle) throw new Error('Les notifications nécessitent le relais');
@@ -113,7 +125,7 @@ export class Notifier {
     let sub = await reg.pushManager.getSubscription();
     if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: fromB64url(publicKey) });
     await this.registerSubscription(sub);
-    await this.engine.replica.update<Device>('devices', this.engine.deviceId, { push: true });
+    await this.setPush(true);
   }
 
   private async registerSubscription(sub: PushSubscription) {
@@ -122,25 +134,25 @@ export class Notifier {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sub.toJSON()),
     });
-    await idb.put('kv', 'pushCircle', this.circle!.circleId);
+    await idb.put('kv', 'pushCircle', `${this.circle!.circleId}:${this.engine.deviceId}`);
   }
 
   async disable() {
     const reg = await navigator.serviceWorker?.getRegistration();
     await (await reg?.pushManager.getSubscription())?.unsubscribe();
     if (this.circle) await relayFetch(this.circle, `/subs/${this.engine.deviceId}`, { method: 'DELETE' }).catch(() => {});
-    await this.engine.replica.update<Device>('devices', this.engine.deviceId, { push: false });
+    await this.setPush(false);
   }
 
-  /** Après un renouvellement de clé ou au démarrage : réenregistre l'abonnement si besoin. */
+  /** Après un changement d'espace ou au démarrage : réenregistre l'abonnement si besoin. */
   async ensureSubscription() {
     if (!pushSupported() || !RELAY_URL || !this.circle || Notification.permission !== 'granted') return;
-    const me = this.engine.replica.get<Device>('devices', this.engine.deviceId);
-    if (!me?.push) return;
     const reg = await navigator.serviceWorker.getRegistration();
     const sub = await reg?.pushManager.getSubscription();
     if (!sub) return;
-    if ((await idb.get<string>('kv', 'pushCircle')) !== this.circle.circleId) await this.registerSubscription(sub);
+    if ((await idb.get<string>('kv', 'pushCircle')) !== `${this.circle.circleId}:${this.engine.deviceId}`) await this.registerSubscription(sub);
+    const me = this.engine.vault.get<Device>('deviceInfo', this.engine.deviceId);
+    if (me && !me.push) await this.setPush(true);
   }
 
   async test() {
@@ -167,9 +179,9 @@ export class Notifier {
   /* ------------------------------------------------------------ rappels planifiés */
 
   /**
-   * Après une modification locale, on recalcule les rappels de TOUS les appareils
-   * (les autres n'ont peut-être pas ouvert l'appli depuis) ; après une modification reçue,
-   * seulement ceux de cet appareil.
+   * Après une modification locale, on recalcule les rappels de TOUS les appareils des cercles concernés
+   * (les autres n'ont peut-être pas ouvert l'appli depuis) ; après une modification reçue, seulement ceux de
+   * cet appareil.
    */
   scheduleUpload(all: boolean) {
     this.needAll ||= all;
@@ -181,47 +193,46 @@ export class Notifier {
     }, 2000);
   }
 
-  reminderData(): ReminderData {
-    const r = this.engine.replica;
+  /** Données des rappels, limitées aux éléments visibles par un cercle (tous si `circle` absent). */
+  reminderData(circle?: string): ReminderData {
+    const v = this.engine.vault;
+    const l = (name: string) => v.list(name).filter((x: Item<unknown>) => !circle || x.groups.includes(circle));
     return {
-      events: r.list('events'),
-      birthdays: r.list('birthdays'),
-      tasks: r.list('tasks'),
-      meals: r.list('meals'),
+      events: l('events'),
+      birthdays: l('birthdays'),
+      tasks: l('tasks'),
+      meals: l('meals'),
       school: {
-        members: r.list('members'),
-        profiles: r.list('schoolProfiles'),
-        slots: r.list('timetable'),
-        homework: r.list('homework'),
-        cards: r.list('cards'),
+        members: v.list('members'),
+        profiles: l('schoolProfiles'),
+        slots: l('timetable'),
+        homework: l('homework'),
+        cards: l('cards'),
       },
     } as unknown as ReminderData;
   }
 
+  /**
+   * Chaque appareil a :
+   *  - une liste principale (ses réveils), envoyée seulement par les appareils de son membre ;
+   *  - une liste par cercle, calculée par les appareils autorisés de ce cercle, avec les seuls éléments que ce
+   *    cercle voit. Un appareil qui ne voit pas un cercle ne peut donc ni lire ni effacer ses rappels.
+   *    (Un élément visible par deux cercles donne deux rappels identiques, fusionnés par le téléphone.)
+   */
   async uploadSchedules(everyone: boolean) {
-    if (!this.circle || !RELAY_URL || this.engine.sync?.status !== 'online') return;
-    const data = this.reminderData();
-    const targets = this.devices().filter((d) => d.push && (everyone || d.id === this.engine.deviceId));
-    for (const d of targets) {
-      const reminders = computeReminders(data, d.memberId, prefsOf(this.engine, d.memberId));
+    if (!this.circle || !RELAY_URL || this.engine.sync?.status !== 'online' || !this.engine.migrated) return;
+    const me = this.engine.deviceId;
+    const myMember = this.engine.memberId;
+    const devices = this.devices().filter((d) => d.push);
+    for (const d of devices.filter((x) => x.memberId === myMember && (everyone || x.id === me))) {
       const alarms = this.alarmRings(d.id);
       const key = `${this.circle.circleId}:${d.id}`;
-      const fingerprint = JSON.stringify([reminders, alarms]);
+      const fingerprint = JSON.stringify(alarms);
       if (this.uploaded.get(key) === fingerprint) continue;
       const items: QueueItem[] = [];
-      // Réveils d'abord : ils passent avant les autres rappels si la liste est pleine.
       for (const { alarm, at } of alarms) {
         const payload = await this.encrypt(alarmPayload(alarm, at));
         for (const delay of PUSH_FOLLOW_UPS) items.push({ device: d.id, at: at + delay * 60_000, payload, urgent: true });
-      }
-      for (const r of reminders) {
-        items.push({
-          device: d.id,
-          at: r.at,
-          topic: await topicOf(r.tag),
-          urgent: r.urgent,
-          payload: await this.encrypt({ title: r.title, body: r.body, tag: r.tag, url: r.url, kind: r.kind, snooze: r.kind !== 'quiz', answer: r.answer }),
-        });
       }
       await relayFetch(this.circle, `/schedule/${d.id}`, {
         method: 'PUT',
@@ -230,41 +241,19 @@ export class Notifier {
       });
       this.uploaded.set(key, fingerprint);
     }
-    await this.uploadPrivateSchedules(everyone).catch((err) => console.warn('rappels privés', err));
-  }
-
-  /**
-   * Rappels des évènements privés : une liste à part par appareil ET par cercle restreint, calculée
-   * seulement par les appareils qui ont la clé de ce cercle. Ainsi, un appareil qui ne voit pas ces
-   * évènements ne peut pas effacer leurs rappels en envoyant la liste principale, et le contenu ne part
-   * qu'aux appareils des membres du cercle. (Un évènement visible par deux cercles d'une même personne
-   * donne deux rappels identiques, que le téléphone fusionne grâce à leur étiquette commune.)
-   */
-  private async uploadPrivateSchedules(everyone: boolean) {
-    if (!this.circle || !RELAY_URL) return;
-    const groups = this.engine.groups;
-    const all = groups.privateEvents<ReminderData['events'][number]>();
-    for (const g of groups.list()) {
-      if (g.access !== 'ok') continue;
-      const events = all.filter((e) => e.groups.includes(g.id));
-      // Seuls les appareils AUTORISÉS (qui ont la clé du cercle) reçoivent ces rappels : un appareil qui a
-      // seulement choisi le profil d'un membre à son arrivée ne doit rien recevoir de ses évènements privés.
-      const authorized = new Set(groups.holders(g.id).map((d) => d.id));
-      const targets = this.devices().filter(
-        (d) => d.push && authorized.has(d.id) && g.members.includes(d.memberId) && (everyone || d.id === this.engine.deviceId),
-      );
-      for (const d of targets) {
-        const reminders = computeReminders(
-          { events, birthdays: [], tasks: [], meals: [] },
-          d.memberId,
-          prefsOf(this.engine, d.memberId),
-        ).filter((r) => r.kind === 'event');
-        await this.putPart(d.id, g.id, reminders);
+    for (const c of this.engine.vault.circles()) {
+      if (c.outdated) continue;
+      const holders = this.engine.vault.holders(c.id);
+      if (!holders.has(me)) continue;
+      const data = this.reminderData(c.id);
+      for (const d of devices) {
+        if (holders.get(d.id) !== d.memberId || !(everyone || d.id === me)) continue;
+        await this.putPart(d.id, c.id, computeReminders(data, d.memberId, prefsOf(this.engine, d.memberId)));
       }
     }
   }
 
-  /** Remplace la liste de rappels privés d'un appareil pour un cercle (liste vide = effacer). */
+  /** Remplace la liste de rappels d'un appareil pour un cercle (liste vide = effacer). */
   async putPart(deviceId: string, groupId: string, reminders: ReturnType<typeof computeReminders>) {
     if (!this.circle || !RELAY_URL) return;
     const key = `${this.circle.circleId}:${deviceId}:${groupId}`;
@@ -277,7 +266,7 @@ export class Notifier {
         at: r.at,
         topic: await topicOf(r.tag),
         urgent: r.urgent,
-        payload: await this.encrypt({ title: r.title, body: r.body, tag: r.tag, url: r.url, kind: r.kind, snooze: true }),
+        payload: await this.encrypt({ title: r.title, body: r.body, tag: r.tag, url: r.url, kind: r.kind, snooze: r.kind !== 'quiz', answer: r.answer }),
       });
     }
     await relayFetch(this.circle, `/part-schedule/${deviceId}/${groupId}`, {
@@ -288,18 +277,18 @@ export class Notifier {
     this.uploaded.set(key, fingerprint);
   }
 
-  /** Après le retrait de membres d'un cercle : leurs appareils ne doivent plus recevoir ses rappels. */
-  async clearPartsFor(groupId: string, memberIds: string[]) {
-    for (const d of this.devices().filter((x) => memberIds.includes(x.memberId))) {
-      this.uploaded.delete(`${this.circle?.circleId}:${d.id}:${groupId}`);
-      await this.putPart(d.id, groupId, []).catch(() => {});
+  /** Après l'exclusion d'un membre ou la perte d'un appareil : ces appareils ne reçoivent plus les rappels du cercle. */
+  async clearParts(groupId: string, deviceIds: string[]) {
+    for (const id of deviceIds) {
+      this.uploaded.delete(`${this.circle?.circleId}:${id}:${groupId}`);
+      await this.putPart(id, groupId, []).catch(() => {});
     }
   }
 
   /** Sonneries des 7 prochains jours des réveils rangés sur un appareil. */
   private alarmRings(deviceId: string) {
     const now = Date.now();
-    return this.engine.replica
+    return this.engine.vault
       .list<Alarm>('alarms')
       .filter((a) => a.deviceId === deviceId)
       .flatMap((alarm) => ringsBetween(alarm, now, now + ALARM_HORIZON).map((at) => ({ alarm, at })));
@@ -315,27 +304,33 @@ export class Notifier {
     const memberId = this.engine.memberId;
     if (!memberId) return [];
     const prefs = prefsOf(this.engine, memberId);
-    const mine = new Set(this.engine.groups.list().filter((g) => g.members.includes(memberId)).map((g) => g.id));
-    const events = this.engine.groups.privateEvents<ReminderData['events'][number]>().filter((e) => e.groups.some((g) => mine.has(g)));
-    const privateOnes = computeReminders({ events, birthdays: [], tasks: [], meals: [] }, memberId, prefs).filter((r) => r.kind === 'event');
-    return [...computeReminders(this.reminderData(), memberId, prefs), ...privateOnes].sort((a, b) => a.at - b.at);
+    const seen = new Set<string>();
+    return computeReminders(this.reminderData(), memberId, prefs)
+      .filter((r) => !seen.has(r.tag) && !!seen.add(r.tag))
+      .sort((a, b) => a.at - b.at);
   }
 
   /* ------------------------------------------------------------ activité (regroupée) */
 
   private memberName(id: string | null | undefined) {
-    return (id && this.engine.replica.get<Member>('members', id)?.name) || "Quelqu'un";
+    return (id && this.engine.vault.get<Member>('members', id)?.name) || "Quelqu'un";
   }
 
-  /** Appareils à prévenir : ceux des autres membres (ou de tous pour la sécurité), selon leurs préférences. */
-  private targets(filter: (memberId: string, prefs: NotifPrefs) => boolean, includeMe = false): string[] {
+  /**
+   * Appareils à prévenir pour un élément : appareils autorisés dans un des cercles qui le voient, des autres
+   * membres (ou de tous pour la sécurité), selon leurs préférences.
+   */
+  private targets(groups: string[], filter: (memberId: string, prefs: NotifPrefs) => boolean, includeMe = false): string[] {
+    const v = this.engine.vault;
+    const allowed = new Map<string, string>();
+    for (const g of groups) for (const [d, m] of v.holders(g)) allowed.set(d, m);
     return this.devices()
-      .filter((d) => d.push && d.id !== this.engine.deviceId && (includeMe || d.memberId !== this.engine.memberId))
+      .filter((d) => d.push && d.id !== this.engine.deviceId && allowed.get(d.id) === d.memberId && (includeMe || d.memberId !== this.engine.memberId))
       .filter((d) => filter(d.memberId, prefsOf(this.engine, d.memberId)))
       .map((d) => d.id);
   }
 
-  private queueActivity(key: string, build: (n: number) => { payload: PushPayload; targets: string[]; urgent?: boolean }, immediate = false) {
+  private queueActivity(key: string, build: (n: number) => { payload: PushPayload; targets: string[]; urgent?: boolean } | null, immediate = false) {
     const cur = this.activity.get(key);
     this.activity.set(key, { count: (cur?.count ?? 0) + 1, build });
     if (this.activityTimer) clearTimeout(this.activityTimer);
@@ -349,11 +344,13 @@ export class Notifier {
     this.activity.clear();
     const items: QueueItem[] = [];
     for (const { count, build } of pending) {
-      const { payload, targets, urgent } = build(count);
+      const b = build(count);
+      if (!b) continue;
+      const { payload, targets, urgent } = b;
       const enc = await this.encrypt(payload);
       const topic = await topicOf(payload.tag);
       for (const device of targets) {
-        const d = this.engine.replica.get<Device>('devices', device);
+        const d = this.device(device);
         const prefs = d ? prefsOf(this.engine, d.memberId) : DEFAULT_PREFS;
         items.push({ device, at: urgent ? Date.now() : outOfQuietHours(Date.now(), prefs), payload: enc, topic, urgent });
       }
@@ -361,98 +358,102 @@ export class Notifier {
     for (let i = 0; i < items.length; i += 50) await this.send(items.slice(i, i + 50)).catch(() => {});
   }
 
+  /** Modifications faites ici : le contenu est lu dans le coffre au moment d'envoyer (après enregistrement). */
   private onLocalOps(ops: Op[]) {
     if (!this.engine.memberId) return;
     const me = this.memberName(this.engine.memberId);
-    const r = this.engine.replica;
+    const v = this.engine.vault;
+    const circleName = (groups: string[]) => {
+      const c = groups.map((g) => v.circle(g)).find((x) => x && !x.personal);
+      return c && groups.length === 1 ? ` · ${c.name}` : '';
+    };
     for (const op of ops) {
-      const isNew = op.cb !== undefined && !op.d;
-      if (op.c === 'messages' && isNew) {
-        const text = String(op.f?.text ?? '');
-        this.queueActivity(`msg-${op.i}`, () => ({
-          payload: { title: me, body: text.slice(0, 200), tag: 'messages', url: '#/m/messages', kind: 'message' },
-          targets: this.targets((_, p) => p.messages),
-        }), true);
-      } else if (op.c === 'listItems' && isNew) {
-        const listId = String(op.f?.listId ?? '');
-        const list = r.get<{ name: string }>('lists', listId);
-        const texts = r.list<{ listId: string; text: string; done: boolean }>('listItems').filter((i) => i.listId === listId && !i.done).slice(-4).map((i) => i.text);
-        this.queueActivity(`list-${listId}`, (n) => ({
-          payload: {
-            title: `${list?.name ?? 'Liste'} · ${n} ajout${n > 1 ? 's' : ''}`,
-            body: `${me} : ${texts.join(', ')}`,
-            tag: `list-${listId}`,
-            url: `#/m/lists/${listId}`,
-            kind: 'list',
-          },
-          targets: this.targets((_, p) => p.lists),
-        }));
-      } else if (op.c === 'photos' && isNew) {
-        this.queueActivity('photos', (n) => ({
-          payload: { title: 'Galerie', body: `${me} a ajouté ${n} photo${n > 1 ? 's' : ''}`, tag: 'photos', url: '#/m/gallery', kind: 'photo' },
-          targets: this.targets((_, p) => p.photos),
-        }));
-      } else if (op.c === 'events' && !op.d && op.f) {
-        const ev = r.get<{ title: string; date: string; start?: string; allDay: boolean; memberIds: string[] }>('events', op.i);
-        if (!ev) continue;
-        const when = `${new Date(ev.date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}${ev.allDay ? '' : ` ${ev.start ?? ''}`}`;
-        this.queueActivity(`ev-${op.i}`, () => ({
-          payload: { title: isNew ? `📅 Nouvel événement` : '📅 Événement modifié', body: `${ev.title} · ${when} (par ${me})`, tag: `evchg-${op.i}`, url: '#/m/calendar', kind: 'calendar' },
-          targets: this.targets((mid, p) => p.calendarChanges && (!ev.memberIds?.length || ev.memberIds.includes(mid))),
-        }));
-      } else if (op.c === PRIVATE_MESSAGES && isNew && op.f?.box) {
-        // Message d'un cercle : seulement aux appareils autorisés des membres du cercle.
-        const msg = this.engine.groups.privateDocs<{ text: string }>(PRIVATE_MESSAGES).find((m) => m.id === op.i);
-        const g = msg && this.engine.groups.list().find((x) => x.id === msg.groups[0]);
-        if (!msg || !g) continue;
-        const authorized = new Set(this.engine.groups.holders(g.id).map((d) => d.id));
-        this.queueActivity(`pmsg-${op.i}`, () => ({
-          payload: { title: `${me} · 🔒 ${g.name}`, body: String(msg.text ?? '').slice(0, 200), tag: `messages-${g.id}`, url: `#/m/messages/${g.id}`, kind: 'message' },
-          targets: this.targets((mid, p) => p.messages && g.members.includes(mid)).filter((id) => authorized.has(id)),
-        }), true);
-      } else if (op.c === PRIVATE_EVENTS && !op.d && op.f?.box) {
-        // Évènement privé : on ne prévient que les membres de ses cercles (le contenu reste chiffré pour les autres).
-        this.privateLocalChange = true;
-        const ev = this.engine.groups.privateEvents<{ title: string; date: string; start?: string; allDay: boolean; memberIds: string[] }>().find((e) => e.id === op.i);
-        if (!ev) continue;
-        const allowed = this.engine.groups.membersOf(ev.groups);
-        const authorized = new Set(ev.groups.flatMap((g) => this.engine.groups.holders(g).map((d) => d.id)));
-        const when = `${new Date(ev.date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}${ev.allDay ? '' : ` ${ev.start ?? ''}`}`;
-        this.queueActivity(`ev-${op.i}`, () => ({
-          payload: { title: isNew ? `🔒 Nouvel événement` : '🔒 Événement modifié', body: `${ev.title} · ${when} (par ${me})`, tag: `evchg-${op.i}`, url: '#/m/calendar', kind: 'calendar' },
-          targets: this.targets((mid, p) => p.calendarChanges && allowed.has(mid) && (!ev.memberIds?.length || ev.memberIds.includes(mid))).filter((id) =>
-            authorized.has(id),
-          ),
-        }));
-      } else if (op.c === 'tasks' && op.f && 'assigneeId' in op.f && op.f.assigneeId && op.f.assigneeId !== this.engine.memberId) {
-        const task = r.get<{ title: string }>('tasks', op.i);
-        const assignee = String(op.f.assigneeId);
-        this.queueActivity(`task-${op.i}`, () => ({
-          payload: { title: '✅ Nouvelle tâche pour vous', body: `${task?.title ?? ''} (de la part de ${me})`, tag: `taskassign-${op.i}`, url: '#/m/tasks', kind: 'task' },
-          targets: this.targets((mid, p) => p.tasks && mid === assignee),
-        }));
-      } else if (op.c === 'homework' && isNew && op.f?.childId && op.f.childId !== this.engine.memberId) {
-        const childId = String(op.f.childId);
-        const title = String(op.f.title ?? '');
-        const subject = String(op.f.subject ?? '');
-        this.queueActivity(`hw-${op.i}`, () => ({
-          payload: { title: `🏫 Nouveau dans ton cahier de textes`, body: `${subject} : ${title} (ajouté par ${me})`, tag: `hwnew-${op.i}`, url: `#/m/school/${childId}`, kind: 'school' },
-          targets: this.targets((mid, p) => p.school && mid === childId),
-        }));
-      } else if (op.c === 'devices' && isNew) {
+      if (!op.c.startsWith(V2) || op.d) continue;
+      const name = op.c.slice(V2.length);
+      const isNew = op.cb !== undefined;
+      const get = <T,>() => {
+        const it = v.get<T>(name, op.i);
+        return it && it.groups.some((g) => !v.circle(g)?.personal) ? it : undefined;
+      };
+      if (name === 'messages' && isNew) {
+        this.queueActivity(`msg-${op.i}`, () => {
+          const m = get<{ text: string }>();
+          if (!m) return null;
+          return {
+            payload: { title: `${me}${circleName(m.groups)}`, body: String(m.text ?? '').slice(0, 200), tag: `messages-${m.groups[0]}`, url: `#/m/messages/${m.groups[0]}`, kind: 'message' },
+            targets: this.targets(m.groups, (_, p) => p.messages),
+          };
+        }, true);
+      } else if (name === 'listItems' && isNew) {
+        // Regroupé par liste, une fois l'élément enregistré dans le coffre.
+        setTimeout(() => {
+          const it = get<{ listId: string }>();
+          if (!it) return;
+          const listId = it.listId;
+          this.queueActivity(`list-${listId}`, (n) => {
+            const list = v.get<{ name: string }>('lists', listId);
+            const texts = v.list<{ listId: string; text: string; done: boolean }>('listItems').filter((i) => i.listId === listId && !i.done).slice(-4).map((i) => i.text);
+            return {
+              payload: { title: `${list?.name ?? 'Liste'} · ${n} ajout${n > 1 ? 's' : ''}`, body: `${me} : ${texts.join(', ')}`, tag: `list-${listId}`, url: `#/m/lists/${listId}`, kind: 'list' },
+              targets: this.targets(it.groups, (_, p) => p.lists),
+            };
+          });
+        }, 100);
+      } else if (name === 'photos' && isNew) {
+        this.queueActivity('photos', (n) => {
+          const ph = get();
+          if (!ph) return null;
+          return {
+            payload: { title: 'Galerie', body: `${me} a ajouté ${n} photo${n > 1 ? 's' : ''}`, tag: 'photos', url: '#/m/gallery', kind: 'photo' },
+            targets: this.targets(ph.groups, (_, p) => p.photos),
+          };
+        });
+      } else if (name === 'events') {
+        this.queueActivity(`ev-${op.i}`, () => {
+          const ev = get<{ title: string; date: string; start?: string; allDay: boolean; memberIds: string[] }>();
+          if (!ev) return null;
+          const when = `${new Date(ev.date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}${ev.allDay ? '' : ` ${ev.start ?? ''}`}`;
+          return {
+            payload: { title: isNew ? `📅 Nouvel événement` : '📅 Événement modifié', body: `${ev.title} · ${when} (par ${me})`, tag: `evchg-${op.i}`, url: '#/m/calendar', kind: 'calendar' },
+            targets: this.targets(ev.groups, (mid, p) => p.calendarChanges && (!ev.memberIds?.length || ev.memberIds.includes(mid))),
+          };
+        });
+      } else if (name === 'tasks') {
+        this.queueActivity(`task-${op.i}`, () => {
+          const task = get<{ title: string; assigneeId?: string }>();
+          const assignee = task?.assigneeId;
+          if (!task || !assignee || assignee === this.engine.memberId || !isNew) return null;
+          return {
+            payload: { title: '✅ Nouvelle tâche pour vous', body: `${task.title ?? ''} (de la part de ${me})`, tag: `taskassign-${op.i}`, url: '#/m/tasks', kind: 'task' },
+            targets: this.targets(task.groups, (mid, p) => p.tasks && mid === assignee),
+          };
+        });
+      } else if (name === 'homework' && isNew) {
+        this.queueActivity(`hw-${op.i}`, () => {
+          const hw = get<{ childId: string; title: string; subject: string }>();
+          if (!hw || hw.childId === this.engine.memberId) return null;
+          return {
+            payload: { title: `🏫 Nouveau dans ton cahier de textes`, body: `${hw.subject} : ${hw.title} (ajouté par ${me})`, tag: `hwnew-${op.i}`, url: `#/m/school/${hw.childId}`, kind: 'school' },
+            targets: this.targets(hw.groups, (mid, p) => p.school && mid === hw.childId),
+          };
+        });
+      } else if (name === 'deviceInfo' && isNew) {
         // Alerte de sécurité : toujours envoyée, même pendant les heures calmes.
-        const d = r.get<Device>('devices', op.i);
-        this.queueActivity(`dev-${op.i}`, () => ({
-          payload: {
-            title: '🔐 Nouvel appareil dans le cercle',
-            body: `${d?.label ?? 'Appareil'} (${this.memberName(d?.memberId)}). Si ce n'est pas normal, retirez-le dans Sécurité.`,
-            tag: `dev-${op.i}`,
-            url: '#/security',
-            kind: 'security',
-          },
-          targets: this.targets(() => true, true),
-          urgent: true,
-        }), true);
+        this.queueActivity(`dev-${op.i}`, () => {
+          const d = v.get<Device>('deviceInfo', op.i);
+          if (!d) return null;
+          return {
+            payload: {
+              title: '🔐 Nouvel appareil dans vos cercles',
+              body: `${d.label ?? 'Appareil'} (${this.memberName(d.memberId)}). Si ce n'est pas normal, déclarez-le perdu dans Cercles.`,
+              tag: `dev-${op.i}`,
+              url: '#/circles',
+              kind: 'security',
+            },
+            targets: this.targets(d.groups, () => true, true),
+            urgent: true,
+          };
+        }, true);
       }
     }
   }

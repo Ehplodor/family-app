@@ -3,6 +3,7 @@ import { Contact as ContactIcon, Mail, MapPin, Phone, Search } from 'lucide-reac
 import { useCollection } from '../store';
 import { Empty, Fab, Field, Page, Sheet, confirmDelete } from '../ui';
 import type { Doc } from '../store';
+import { VisibleBy, useItemGroups, withGroups } from './Circles';
 
 export type Contact = { name: string; category?: string; phone?: string; email?: string; address?: string; notes?: string };
 
@@ -96,6 +97,7 @@ export function ContactsPage() {
 }
 
 function ContactForm({ initial, onSubmit, onDelete }: { initial?: Contact; onSubmit: (c: Contact) => void; onDelete?: () => void }) {
+  const [groups, setGroups] = useItemGroups(initial);
   const [c, setC] = useState<Contact>(initial ?? { name: '', category: '', phone: '', email: '', address: '', notes: '' });
   const set = (patch: Partial<Contact>) => setC((x) => ({ ...x, ...patch }));
   return (
@@ -103,7 +105,7 @@ function ContactForm({ initial, onSubmit, onDelete }: { initial?: Contact; onSub
       className="form"
       onSubmit={(e) => {
         e.preventDefault();
-        if (c.name.trim()) onSubmit({ ...c, name: c.name.trim() });
+        if (c.name.trim()) onSubmit(withGroups({ ...c, name: c.name.trim() }, groups));
       }}
     >
       <Field label="Nom">
@@ -129,6 +131,7 @@ function ContactForm({ initial, onSubmit, onDelete }: { initial?: Contact; onSub
       <Field label="Notes">
         <textarea rows={3} value={c.notes ?? ''} onChange={(e) => set({ notes: e.target.value })} />
       </Field>
+      <VisibleBy value={groups} onChange={setGroups} />
       <div className="form-actions">
         {onDelete && (
           <button type="button" className="btn danger" onClick={onDelete}>

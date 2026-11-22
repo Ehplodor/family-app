@@ -314,3 +314,6 @@ export async function unwrapAdminKey(wrapped: string, masterkey: string, scope: 
     return null;
   }
 }
+
+/** Clé AES tirée du secret renvoyé par l'empreinte/le visage (WebAuthn PRF), pour ré-afficher la masterkey. */
+export const prfKey = (output: Bytes) => aesKeyFrom(output, 'masterkey-prf');

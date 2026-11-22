@@ -14,9 +14,9 @@ export function SettingsTab({ childId }: { childId: string }) {
   const engine = useEngine();
   const { members, byId } = useMembers();
   const p = profileOf(useDoc<Partial<SchoolProfile>>('schoolProfiles', childId));
-  const { docs: devices } = useCollection<Device>('devices');
+  const { docs: devices } = useCollection<Device>('deviceInfo');
   const child = byId(childId);
-  const set = (patch: Partial<SchoolProfile>) => engine.replica.upsert<SchoolProfile>('schoolProfiles', childId, patch);
+  const set = (patch: Partial<SchoolProfile>) => engine.data.upsert<SchoolProfile>('schoolProfiles', childId, patch);
   const setCopy = (patch: Partial<SchoolProfile['parentCopy']>) => set({ parentCopy: { ...p.parentCopy, ...patch } });
   const parents = members.filter((m) => m.kind !== 'child');
   const childHasPush = devices.some((d) => d.memberId === childId && d.push && !d.revoked);

@@ -1,10 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { HeartHandshake, Lock } from 'lucide-react';
-import { randomId } from '../lib/bytes';
 import { parseInviteLink } from '../lib/invite';
 import { RELAY_URL } from '../lib/sync';
-import type { Member } from '../lib/engine';
-import { useCollection, useEngine, useSyncStatus } from '../store';
+import { useCircles, useEngine } from '../store';
 import { ColorPicker, Field, FieldGroup, PALETTE } from '../ui';
 import { JoinWaiting } from './Join';
 import { Scanner } from './Scanner';
@@ -145,59 +143,52 @@ export function Onboarding() {
   );
 }
 
-/** Après avoir rejoint un cercle : qui êtes-vous ? */
+/** Après avoir rejoint : votre profil (prénom, couleur), visible par vos cercles. */
 export function ChooseMember() {
   const engine = useEngine();
-  const status = useSyncStatus();
-  const { docs: members } = useCollection<Member>('members');
+  const circles = useCircles();
   const [name, setName] = useState('');
   const [color, setColor] = useState(PALETTE[8]);
-  const [waited, setWaited] = useState(false);
-  useEffect(() => {
-    const t = setTimeout(() => setWaited(true), 8000);
-    return () => clearTimeout(t);
-  }, []);
-
-  const pick = async (id: string) => {
-    await engine.setMember(id);
-    await engine.registerDevice();
-  };
+  const [error, setError] = useState('');
+  const ready = circles.some((c) => c.writable);
+  // Appareil de l'ancien format : son profil est repris automatiquement (lib/migrate.ts).
+  const migrating = engine.replica.allRecords((x) => x.c === 'members' && x.id === engine.memberId).length > 0;
 
   return (
     <div className="onboarding">
       <Hero />
       <div className="card form">
-        <h2>Qui êtes-vous ?</h2>
-        {!members.length && !waited && status !== 'online' ? (
-          <p className="muted">Synchronisation des données de la famille…</p>
+        {!ready || migrating ? (
+          <>
+            <h2>{migrating ? 'Mise à jour…' : 'Bienvenue !'}</h2>
+            <p className="muted">Réception de vos accès… Gardez l'appli ouverte sur l'appareil qui vous a invité quelques secondes.</p>
+          </>
         ) : (
-          <div className="chips">
-            {members.map((m) => (
-              <button key={m.id} className="chip on" style={{ background: m.color, borderColor: m.color }} onClick={() => pick(m.id)}>
-                {m.name}
-              </button>
-            ))}
-          </div>
+          <>
+            <h2>Qui êtes-vous ?</h2>
+            <Field label="Votre prénom">
+              <input value={name} onChange={(e) => setName(e.target.value)} />
+            </Field>
+            <FieldGroup label="Votre couleur">
+              <ColorPicker value={color} onChange={setColor} />
+            </FieldGroup>
+            {error && <p className="error">{error}</p>}
+            <button
+              className="btn primary"
+              disabled={!name.trim()}
+              onClick={async () => {
+                try {
+                  await engine.saveProfile({ name: name.trim(), color });
+                  await engine.registerDevice();
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : String(err));
+                }
+              }}
+            >
+              C'est parti
+            </button>
+          </>
         )}
-        <p className="muted">… ou je suis nouveau :</p>
-        <Field label="Votre prénom">
-          <input value={name} onChange={(e) => setName(e.target.value)} />
-        </Field>
-        <FieldGroup label="Votre couleur">
-          <ColorPicker value={color} onChange={setColor} />
-        </FieldGroup>
-        <button
-          className="btn primary"
-          disabled={!name.trim()}
-          onClick={async () => {
-            const id = randomId();
-            await engine.setMember(id);
-            await engine.replica.upsert<Member>('members', id, { name: name.trim(), color });
-            await engine.registerDevice();
-          }}
-        >
-          Rejoindre
-        </button>
       </div>
     </div>
   );

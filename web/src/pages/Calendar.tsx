@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Cake, ChevronLeft, ChevronRight, Layers, Lock, Search, X } from 'lucide-react';
-import { useCalendarEvents, useCollection, useEngine, useGroups, useMembers } from '../store';
-import { randomId } from '../lib/bytes';
+import { useCircles, useCollection, useMembers, useVault } from '../store';
 import { CirclesSheet, useDefaultGroups, VisibilityPicker } from './Circles';
 import { addMonths, capitalize, fmt, parseISODate, startOfWeek, addDays, toISODate, today } from '../dates';
 import { Avatar, Empty, Fab, Field, FieldGroup, MemberChips, Page, Sheet, confirmDelete } from '../ui';
@@ -27,10 +26,7 @@ export type CalEvent = {
   notes?: string;
   /** Minutes avant le début ; null = aucun rappel ; -1 ou absent = réglage par défaut du membre. */
   reminder?: number | null;
-  /**
-   * Cercles restreints qui voient l'évènement (vide ou absent = toute la famille). Jamais stocké dans la
-   * collection `events` : un évènement restreint est rangé, chiffré, dans `privateEvents` (lib/groups.ts).
-   */
+  /** Cercles qui voient l'évènement (portés par l'élément, voir lib/vault.ts). */
   groups?: string[];
 };
 
@@ -40,6 +36,12 @@ function eventFields(ev: CalEvent): CalEvent {
   const out: Record<string, unknown> = {};
   for (const k of EVENT_FIELDS) if (ev[k] !== undefined) out[k] = ev[k];
   return out as CalEvent;
+}
+
+/** Cercle partagé le plus large (celui de toute la famille, en général). */
+function useMainCircle(): string | undefined {
+  const circles = useCircles();
+  return [...circles].filter((c) => !c.personal).sort((a, b) => b.members.length - a.members.length)[0]?.id;
 }
 
 export type Occurrence = {
@@ -52,7 +54,7 @@ export type Occurrence = {
   birthday?: boolean;
   /** Précision pour les événements sur plusieurs jours (« jusqu'au … »). */
   note?: string;
-  /** Évènement réservé à des cercles restreints. */
+  /** Évènement non visible par le cercle principal (réservé à des cercles restreints). */
   private?: boolean;
 };
 
@@ -60,12 +62,13 @@ export { occursOn };
 
 /** Tout ce qui se passe un jour donné (événements + anniversaires), trié. */
 export function useDayAgenda() {
-  const events = useCalendarEvents<CalEvent>();
+  const events = useCollection<CalEvent>('events').docs;
   const { docs: birthdays } = useCollection<Birthday>('birthdays');
   const { docs: homework } = useCollection<Homework>('homework');
   const { docs: imported } = useCollection<ImportedCalendar>('calendars');
   const prefs = useCalendarPrefs();
   const { byId } = useMembers();
+  const main = useMainCircle();
   return useMemo(
     () =>
       (iso: string): Occurrence[] => {
@@ -95,7 +98,7 @@ export function useDayAgenda() {
               color: members[0]?.color ?? 'var(--accent)',
               members,
               event: e,
-              private: !!e.groups?.length,
+              private: !!main && !e.groups?.includes(main),
               note: !end ? undefined : part === 'last' ? `depuis ${short(e.date)}` : `jusqu'au ${short(end)}`,
             };
           });
@@ -132,7 +135,7 @@ export function useDayAgenda() {
           ...(isShown(prefs, 'main') ? evs : []),
         ];
       },
-    [events, birthdays, homework, imported, prefs, byId],
+    [events, birthdays, homework, imported, prefs, byId, main],
   );
 }
 
@@ -169,10 +172,7 @@ const WEEKDAYS = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
 
 export function CalendarPage() {
   const familyEvents = useCollection<CalEvent>('events');
-  const allEvents = useCalendarEvents<CalEvent>();
-  const engine = useEngine();
-  const groups = useGroups();
-  const pendingDevices = groups.pendingCount();
+  const allEvents = useCollection<CalEvent>('events').docs;
   const [circles, setCircles] = useState(false);
   const fullAgenda = useDayAgenda();
   const { members } = useMembers();
@@ -214,45 +214,13 @@ export function CalendarPage() {
     return out;
   }, [allEvents, visible[0].getTime(), visible.length]);
 
-  /**
-   * Enregistre un évènement selon sa visibilité. Passer de « toute la famille » à des cercles crée un
-   * évènement chiffré et efface le contenu de l'ancien (les appareils qui l'avaient déjà reçu l'ont vu).
-   */
+  /** Enregistre un évènement (ses cercles sont portés par l'élément, chiffré pour chacun). */
   const save = async (editing: Doc<CalEvent> | 'new', ev: CalEvent, target: string[]) => {
-    const data = eventFields(ev);
-    const wasPrivate = editing !== 'new' && !!editing.groups?.length;
-    if (!target.length) {
-      if (editing === 'new') await familyEvents.create(data);
-      else if (!wasPrivate) await familyEvents.update(editing.id, data);
-      else {
-        await familyEvents.create(data);
-        await groups.removeEvent(editing.id);
-      }
-      return;
-    }
-    if (editing === 'new' || wasPrivate) {
-      await groups.saveEvent(editing === 'new' ? randomId() : editing.id, data, target);
-    } else {
-      await groups.saveEvent(randomId(), data, target);
-      // Tout le contenu de l'ancien évènement est effacé des copies (il ne reste qu'une « pierre tombale »).
-      await engine.replica.erase('events', editing.id, {
-        title: '',
-        notes: '',
-        memberIds: [],
-        date: '',
-        endDate: '',
-        start: '',
-        end: '',
-        repeat: 'none',
-        allDay: false,
-        reminder: null,
-      });
-    }
+    const data = { ...eventFields(ev), groups: target };
+    if (editing === 'new') await familyEvents.create(data);
+    else await familyEvents.update(editing.id, data);
   };
-  const remove = async (e: Doc<CalEvent>) => {
-    if (e.groups?.length) await groups.removeEvent(e.id);
-    else await familyEvents.remove(e.id);
-  };
+  const remove = (e: Doc<CalEvent>) => familyEvents.remove(e.id);
   const { byId } = useMembers();
 
   const goToday = () => {
@@ -267,7 +235,6 @@ export function CalendarPage() {
         <>
           <button className="icon-btn compact badge-host" onClick={() => setChoosing(true)} aria-label="Calendriers affichés et cercles">
             <Layers size={22} />
-            {pendingDevices > 0 && <span className="badge">{pendingDevices}</span>}
           </button>
           <button
             className="icon-btn compact"
@@ -371,7 +338,6 @@ export function CalendarPage() {
               }}
             >
               <Lock size={16} /> Cercles : qui voit quoi
-              {pendingDevices > 0 && <span className="pill">{pendingDevices} appareil(s) à autoriser</span>}
             </button>
             <CalendarsSheet />
           </>
@@ -386,8 +352,8 @@ export function CalendarPage() {
             initial={editing === 'new' ? undefined : editing}
             defaultDate={selected}
             onSubmit={async (ev, target) => {
-              const wasFamily = editing !== 'new' && !editing.groups?.length;
-              if (wasFamily && target.length && !confirm("Cet évènement était visible par toute la famille : les appareils qui l'ont déjà reçu l'ont vu. Il ne sera plus visible que par les cercles choisis. Continuer ?")) return;
+              const removed = editing !== 'new' && (editing.groups ?? []).some((g) => !target.includes(g));
+              if (removed && !confirm("Les appareils qui ont déjà reçu cet évènement l'ont vu. Il ne sera plus visible que par les cercles choisis. Continuer ?")) return;
               await save(editing, ev, target);
               setEditing(null);
             }}
@@ -420,14 +386,14 @@ function EventForm({
   onDelete?: () => void;
 }) {
   const { members: everyone } = useMembers();
-  const groupsMgr = useGroups();
+  const vault = useVault();
   const defaultGroups = useDefaultGroups();
   const [ev, setEv] = useState<CalEvent>(
     initial ?? { title: '', date: defaultDate, allDay: false, start: '09:00', end: '10:00', repeat: 'none', memberIds: [], notes: '' },
   );
-  const [target, setTarget] = useState<string[]>(initial ? (initial.groups ?? []) : defaultGroups);
-  // Un évènement restreint ne concerne que des membres de ses cercles (les autres ne le verraient pas).
-  const allowed = target.length ? groupsMgr.membersOf(target) : null;
+  const [target, setTarget] = useState<string[]>(initial?.groups?.length ? initial.groups : defaultGroups);
+  // Un évènement ne concerne que des membres de ses cercles (les autres ne le verraient pas).
+  const allowed = target.length ? vault.membersOf(target) : null;
   const members = allowed ? everyone.filter((m) => allowed.has(m.id)) : everyone;
   const set = (patch: Partial<CalEvent>) => setEv((e) => ({ ...e, ...patch }));
 
