@@ -4,17 +4,23 @@
  * La cryptographie et les règles sont dans groups.ts (fonctions pures, testées).
  */
 import { randomId } from './bytes';
-import { deriveGroupKey, newSecret } from './crypto';
+import { deriveGroupKeyId, newSecret } from './crypto';
+import * as idb from './idb';
 import type { Device, Member } from './engine';
 import {
-  holdersOf,
+  checkLink,
+  checkProof,
+  grantProof,
   isId,
+  keyLink,
   latestKey,
+  newGroupKey,
   openGroupMeta,
   openGroupSecret,
   openPrivate,
   pendingDevices,
   personalGroupId,
+  resolveCurrent,
   sealGroupMeta,
   sealGroupSecret,
   sealPrivate,
@@ -33,10 +39,22 @@ const PRIVATE_COLLECTIONS = [PRIVATE_EVENTS, PRIVATE_MESSAGES];
 const SOURCES = new Set(['groups', 'groupKeys', ...PRIVATE_COLLECTIONS, 'devices', 'members']);
 const pkey = (collection: string, id: string) => `${collection}/${id}`;
 
-/** Accès de cet appareil à un cercle. */
+/**
+ * Accès de cet appareil à un cercle : `ok`, `outdated` (une clé plus récente existe et cet appareil ne l'a pas
+ * reçue : retiré du cercle, ou à autoriser de nouveau).
+ */
 export type GroupAccess = 'ok' | 'outdated';
-export type GroupInfo = GroupMeta & { id: string; access: GroupAccess; keyEpoch: number };
-export type DeviceRow = Device & { id: string };
+export type GroupInfo = GroupMeta & {
+  id: string;
+  access: GroupAccess;
+  keyEpoch: number;
+  /** Deux clés concurrentes pour ce cercle : à signaler (voir resolveCurrent). */
+  conflict?: boolean;
+  /** Description illisible avec la clé en vigueur (écrite avec une ancienne clé) : à renommer. */
+  broken?: boolean;
+};
+type Current = { key: HeldKey; conflict: boolean; holders: Set<string> };
+export type DeviceRow = Doc<Device>;
 /** Évènement privé déchiffré : les champs de l'évènement + les cercles qui le voient. */
 export type PrivatePayload = { groups: string[] } & Record<string, unknown>;
 
@@ -49,7 +67,12 @@ export class GroupManager {
   groups = new Map<string, GroupInfo>();
   /** Évènements privés lisibles par cet appareil. */
   private events = new Map<string, { box: unknown; data: PrivatePayload }>();
-  private opened = new Map<string, HeldKey | null>();
+  private opened = new Map<string, { env: string; key: HeldKey | null }>();
+  /** Clé en vigueur de chaque cercle, pour cet appareil, et appareils dont l'autorisation est prouvée. */
+  private current = new Map<string, Current>();
+  /** Dernière clé jugée sûre par cercle (gardée sur l'appareil : voir resolveCurrent). */
+  private pins: Map<string, string> | null = null;
+  private proofs = new Map<string, boolean>();
   private listeners = new Set<() => void>();
   private version = 0;
   private running: Promise<void> | null = null;
@@ -105,25 +128,74 @@ export class GroupManager {
 
   private async compute() {
     const me = this.identity.deviceId;
-    // 1. Clés : on n'ouvre que les enveloppes adressées à cet appareil (une seule fois chacune).
+    if (!this.pins) {
+      const saved = await idb.get<Record<string, string>>('kv', 'groupPins').catch(() => undefined);
+      this.pins = new Map(Object.entries(saved ?? {}));
+    }
+    // 1. Clés : on n'ouvre que les enveloppes adressées à cet appareil (une seule fois chacune). Le secret doit
+    //    correspondre à l'identifiant de la clé (dérivé du secret).
     const held = new Map<string, HeldKey>();
-    for (const d of this.keyDocs()) {
+    const keys = this.keyDocs();
+    for (const d of keys) {
       if (d.device !== me) continue;
-      if (!this.opened.has(d.id)) this.opened.set(d.id, await openGroupSecret(this.identity.privateKey, d, me));
-      const k = this.opened.get(d.id);
+      const cached = this.opened.get(d.id);
+      let k = cached && cached.env === d.env ? cached.key : await openGroupSecret(this.identity.privateKey, d, me);
+      // Enveloppe réécrite avec un contenu invalide : on garde la clé déjà vérifiée.
+      if (!k && cached?.key) k = cached.key;
+      this.opened.set(d.id, { env: d.env, key: k });
       if (k && k.group === d.group) held.set(k.keyId, k);
     }
-    // 2. Cercles lisibles.
-    const keys = this.keyDocs();
+    // 2. Clé en vigueur de chaque cercle (chaîne de clés depuis l'épingle) et appareils autorisés (preuves).
+    const current = new Map<string, Current>();
+    const byGroup = new Map<string, HeldKey[]>();
+    for (const k of held.values()) byGroup.set(k.group, [...(byGroup.get(k.group) ?? []), k]);
+    let pinsChanged = false;
+    for (const [group, list] of byGroup) {
+      const docs = keys.filter((d) => d.group === group);
+      const { current: key, conflict } = await resolveCurrent(list, docs, this.pins.get(group));
+      if (!key) continue;
+      if (this.pins.get(group) !== key.keyId) {
+        this.pins.set(group, key.keyId);
+        pinsChanged = true;
+      }
+      const holders = new Set<string>();
+      for (const d of docs) {
+        if (d.key !== key.keyId) continue;
+        const cacheKey = `${d.id}|${d.proof}`;
+        if (!this.proofs.has(cacheKey)) this.proofs.set(cacheKey, await checkProof(key, d.device, d.proof));
+        if (this.proofs.get(cacheKey)) holders.add(d.device);
+      }
+      current.set(group, { key, conflict, holders });
+    }
+    if (pinsChanged) await idb.put('kv', 'groupPins', Object.fromEntries(this.pins)).catch(() => {});
+    // 3. Cercles lisibles : la description n'est acceptée que si elle est chiffrée avec la clé en vigueur.
     const groups = new Map<string, GroupInfo>();
     for (const g of this.replica.list<GroupDoc>('groups')) {
       if (!isId(g.id)) continue;
-      const meta = await openGroupMeta(g, held, g.id);
-      const latest = latestKey(keys, g.id);
-      if (!meta || !latest) continue;
-      groups.set(g.id, { ...meta, id: g.id, access: held.has(latest.key) ? 'ok' : 'outdated', keyEpoch: latest.epoch });
+      const cur = current.get(g.id);
+      if (!cur) continue;
+      const meta = g.mk === cur.key.keyId ? await openGroupMeta(g, held, g.id) : null;
+      // Remplacée ? Seulement si une clé de l'époque suivante est liée à la nôtre (vérifiable avec notre clé) :
+      // une clé fabriquée par un appareil sans accès ne peut pas nous faire croire que nous avons été retirés.
+      let replaced = false;
+      for (const d of keys) {
+        if (d.group === g.id && d.epoch === cur.key.epoch + 1 && d.pk === cur.key.keyId && (await checkLink(cur.key, { keyId: d.key, epoch: d.epoch }, d.link))) {
+          replaced = true;
+          break;
+        }
+      }
+      const info = {
+        id: g.id,
+        access: (replaced ? 'outdated' : 'ok') as GroupAccess,
+        keyEpoch: cur.key.epoch,
+        conflict: cur.conflict,
+      };
+      if (meta) groups.set(g.id, { ...meta, ...info });
+      // (Si la clé a changé sans nous, la description est rechiffrée : le cercle n'est plus visible ici.)
+      else if (g.meta && info.access === 'ok') groups.set(g.id, { name: 'Cercle (description illisible)', color: '#8A8F98', members: [], ...info, broken: true });
     }
-    // 3. Éléments privés lisibles : évènements, messages (on ne redéchiffre que ce qui a changé).
+    this.current = current;
+    // 4. Éléments privés lisibles : évènements, messages (on ne redéchiffre que ce qui a changé).
     const events = new Map<string, { box: unknown; data: PrivatePayload }>();
     for (const col of PRIVATE_COLLECTIONS) {
       for (const doc of this.replica.list<PrivateDoc>(col)) {
@@ -178,24 +250,28 @@ export class GroupManager {
     });
   }
 
-  /** Clé en vigueur d'un cercle, si cet appareil la détient. */
+  /** Clé en vigueur d'un cercle, si cet appareil y a accès (et qu'aucune clé plus récente ne l'a remplacée). */
   private currentKey(group: string): HeldKey | null {
-    const latest = latestKey(this.keyDocs(), group);
-    return latest ? (this.held.get(latest.key) ?? null) : null;
+    const g = this.groups.get(group);
+    if (g && g.access !== 'ok') return null;
+    return this.current.get(group)?.key ?? null;
   }
 
   /** Appareils de la famille qui attendent l'accès à un cercle (à autoriser d'un geste). */
   pending(group: string): DeviceRow[] {
     const g = this.groups.get(group);
-    if (!g || g.access !== 'ok') return [];
-    return pendingDevices(g, this.keyDocs(), group, this.replica.list<Device>('devices') as DeviceRow[]);
+    const cur = this.current.get(group);
+    if (!g || g.access !== 'ok' || !cur) return [];
+    return pendingDevices(g, cur.holders, this.replica.list<Device>('devices') as DeviceRow[]);
   }
 
-  /** Appareils qui ont la clé en vigueur d'un cercle. */
+  /**
+   * Appareils autorisés d'un cercle : ceux dont l'autorisation est prouvée avec la clé en vigueur (un appareil
+   * qui écrirait une fausse enveloppe à son nom ne figure pas ici, et ne reçoit donc aucun rappel privé).
+   */
   holders(group: string): DeviceRow[] {
-    const latest = latestKey(this.keyDocs(), group);
-    if (!latest) return [];
-    const ids = holdersOf(this.keyDocs(), latest.key);
+    const ids = this.current.get(group)?.holders;
+    if (!ids) return [];
     return (this.replica.list<Device>('devices') as DeviceRow[]).filter((d) => ids.has(d.id) && !d.revoked);
   }
 
@@ -215,10 +291,27 @@ export class GroupManager {
 
   /* ------------------------------------------------------------ cercles */
 
-  private async writeKey(group: string, keyId: string, epoch: number, secret: Uint8Array<ArrayBuffer>, device: DeviceRow | { id: string; pub: JsonWebKey }) {
+  /** Remet une clé à un appareil : enveloppe pour sa clé publique + preuve d'autorisation (+ lien éventuel). */
+  private async writeKey(k: HeldKey, device: DeviceRow | { id: string; pub: JsonWebKey }, link?: { pk: string; link: string }) {
     if (!device.pub) return;
-    const env = await sealGroupSecret(device.pub, secret, group, keyId, epoch, device.id);
-    await this.replica.upsert<GroupKeyDoc>('groupKeys', `${keyId}${device.id}`, { group, key: keyId, epoch, device: device.id, env, by: this.identity.deviceId });
+    const env = await sealGroupSecret(device.pub, k.secret, k.group, k.keyId, k.epoch, device.id);
+    const proof = await grantProof(k, device.id);
+    await this.replica.upsert<GroupKeyDoc>('groupKeys', `${k.keyId}${device.id}`, {
+      group: k.group,
+      key: k.keyId,
+      epoch: k.epoch,
+      device: device.id,
+      env,
+      by: this.identity.deviceId,
+      proof,
+      ...(link ?? {}),
+    });
+  }
+
+  private async pin(k: HeldKey) {
+    this.pins ??= new Map();
+    this.pins.set(k.group, k.keyId);
+    await idb.put('kv', 'groupPins', Object.fromEntries(this.pins)).catch(() => {});
   }
 
   private me(): { id: string; pub: JsonWebKey } {
@@ -227,14 +320,17 @@ export class GroupManager {
     return { id: this.identity.deviceId, pub: d.pub };
   }
 
-  /** Nouvelle clé pour un cercle (création, ou retrait d'un membre) : remise aux appareils indiqués + celui-ci. */
-  private async newKey(group: string, epoch: number, recipients: DeviceRow[]): Promise<HeldKey> {
-    const secret = newSecret();
-    const keyId = randomId();
-    await this.writeKey(group, keyId, epoch, secret, this.me());
-    for (const d of recipients) if (d.id !== this.identity.deviceId && !d.revoked) await this.writeKey(group, keyId, epoch, secret, d);
-    const k: HeldKey = { group, keyId, epoch, key: await deriveGroupKey(secret), secret };
-    this.held.set(keyId, k);
+  /**
+   * Nouvelle clé pour un cercle (création, ou retrait d'un membre) : remise aux appareils indiqués + celui-ci.
+   * Une clé renouvelée est liée à la précédente (`prev`) : les autres appareils ne l'adoptent qu'à cette condition.
+   */
+  private async newKey(group: string, recipients: DeviceRow[], prev?: HeldKey): Promise<HeldKey> {
+    const k = await newGroupKey(group, prev ? prev.epoch + 1 : 0, newSecret());
+    const link = prev ? { pk: prev.keyId, link: await keyLink(prev, k) } : undefined;
+    await this.writeKey(k, this.me(), link);
+    for (const d of recipients) if (d.id !== this.identity.deviceId && !d.revoked) await this.writeKey(k, d, link);
+    this.held.set(k.keyId, k);
+    await this.pin(k);
     return k;
   }
 
@@ -242,7 +338,7 @@ export class GroupManager {
     const memberId = this.memberId();
     if (!memberId) throw new Error('Profil inconnu');
     const members = meta.members.includes(memberId) ? meta.members : [memberId, ...meta.members];
-    const k = await this.newKey(id, 0, []);
+    const k = await this.newKey(id, []);
     await this.replica.upsert<GroupDoc>('groups', id, { meta: await sealGroupMeta(k, { ...meta, members }), mk: k.keyId });
     await this.refresh();
     return id;
@@ -260,9 +356,11 @@ export class GroupManager {
     if (g.personal && (members.length !== 1 || members[0] !== g.personal)) throw new Error('Le cercle personnel ne contient que vous');
     if (!members.length) throw new Error('Un cercle a au moins un membre');
     const removed = g.members.filter((m) => !members.includes(m));
-    if (removed.length) {
+    if (removed.length || g.conflict) {
+      // Nouvelle clé, liée à la clé en vigueur, remise aux seuls appareils autorisés des membres restants.
+      // (Aussi en cas de conflit de clés : on repart d'une clé unique.)
       const keep = this.holders(id).filter((d) => members.includes(d.memberId));
-      k = await this.newKey(id, g.keyEpoch + 1, keep);
+      k = await this.newKey(id, keep, k);
     }
     const meta: GroupMeta = { name: patch.name ?? g.name, color: patch.color ?? g.color, members, ...(g.personal ? { personal: g.personal } : {}) };
     await this.replica.upsert<GroupDoc>('groups', id, { meta: await sealGroupMeta(k, meta), mk: k.keyId });
@@ -291,7 +389,7 @@ export class GroupManager {
     const k = this.currentKey(group);
     const d = this.pending(group).find((x) => x.id === deviceId);
     if (!k || !d) throw new Error('Autorisation impossible');
-    await this.writeKey(group, k.keyId, k.epoch, k.secret, d);
+    await this.writeKey(k, d);
     await this.refresh();
   }
 
@@ -307,6 +405,9 @@ export class GroupManager {
     const latest = latestKey(this.keyDocs(), id);
     const member = this.replica.get<Member>('members', memberId);
     if (!latest) {
+      // Seul l'appareil le plus ancien du membre crée son cercle personnel : un appareil qui vient de choisir ce
+      // profil (peut-être pour se faire passer pour lui) ne doit pas devenir le « propriétaire » de ses clés.
+      if (this.oldestDeviceOf(memberId) !== this.identity.deviceId) return;
       await this.create({ name, color: member?.color ?? '#8E5CE6', members: [memberId], personal: memberId }, id);
       return;
     }
@@ -320,6 +421,13 @@ export class GroupManager {
     }
   }
 
+  /** Appareil (non retiré) le plus ancien d'un membre. */
+  oldestDeviceOf(memberId: string): string | null {
+    const mine = (this.replica.list<Device>('devices') as DeviceRow[]).filter((d) => d.memberId === memberId && !d.revoked && d.pub);
+    mine.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.id < b.id ? -1 : 1));
+    return mine[0]?.id ?? null;
+  }
+
   /** Clés détenues (pour la sauvegarde chiffrée). */
   exportSecrets(): { group: string; key: string; epoch: number; secret: Uint8Array }[] {
     return [...this.held.values()].map((k) => ({ group: k.group, key: k.keyId, epoch: k.epoch, secret: k.secret }));
@@ -329,8 +437,8 @@ export class GroupManager {
   async importSecrets(list: { group: string; key: string; epoch: number; secret: Uint8Array<ArrayBuffer> }[]) {
     for (const s of list) {
       if (!isId(s.group) || !isId(s.key) || !Number.isInteger(s.epoch) || s.secret?.length !== 32) continue;
-      if (this.held.has(s.key)) continue;
-      await this.writeKey(s.group, s.key, s.epoch, s.secret, this.me());
+      if (this.held.has(s.key) || (await deriveGroupKeyId(s.secret)) !== s.key) continue;
+      await this.writeKey(await newGroupKey(s.group, s.epoch, s.secret), this.me());
     }
     await this.refresh();
   }

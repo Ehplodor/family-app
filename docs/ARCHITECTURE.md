@@ -131,6 +131,17 @@ Clé à usage unique de l'évènement → chiffre l'évènement entier (titre, d
   est ». Il ne reçoit donc **jamais automatiquement** la clé d'un cercle : un appareil qui y a déjà accès affiche
   « X attend l'accès » et doit appuyer sur *Autoriser*. Les rappels et notifications d'un évènement privé ne partent
   qu'aux appareils autorisés.
+- **Clés difficiles à falsifier** (même par un appareil de la famille qui ferait tourner une version modifiée de
+  l'appli) :
+  - l'identifiant d'une clé est dérivé de son secret : réécrire une enveloppe avec un autre secret sous le même nom
+    est détecté et ignoré ;
+  - chaque appareil « épingle » la clé en vigueur de chaque cercle (`kv/groupPins`) et ne passe à une clé plus
+    récente que si elle est **liée** à la sienne (preuve chiffrée avec l'ancienne clé). Une clé fabriquée par un
+    appareil sans accès n'est donc jamais adoptée, et ne peut pas non plus faire croire à un retrait ;
+  - un appareil n'est « autorisé » (rappels, notifications, liste « Appareils qui ont accès ») que si son enveloppe
+    porte une preuve chiffrée avec la clé du cercle ;
+  - le cercle « Moi seul » d'un membre est créé par son appareil **le plus ancien** : un appareil qui vient de
+    choisir ce profil ne peut pas en devenir le propriétaire.
 - **Retirer un membre** d'un cercle crée une nouvelle clé (époque suivante), remise seulement aux appareils déjà
   autorisés des membres restants ; la description du cercle est rechiffrée avec elle. Chaque modification d'un
   évènement tire une nouvelle clé à usage unique : la personne retirée garde ce qu'elle avait déjà vu, mais ne lit
@@ -148,7 +159,14 @@ Clé à usage unique de l'évènement → chiffre l'évènement entier (titre, d
   change pas.
 - **Sauvegarde** : la sauvegarde chiffrée (phrase secrète) contient aussi les clés des cercles de l'appareil, pour
   que ses évènements privés restent lisibles après une restauration.
-- **Limites** : la fusion se fait par évènement entier (et non champ par champ) pour un évènement privé ; un membre
+- **Limites** : un **ancien** membre d'un cercle qui ferait tourner une version modifiée de l'appli pourrait, avec
+  l'ancienne clé, fabriquer une clé concurrente au moment de son retrait : l'appli le détecte (« deux clés
+  concurrentes ») et propose de renouveler la clé. Un appareil qui n'a encore aucune clé d'un cercle (nouvel
+  appareil en attente) ne peut pas distinguer la vraie clé d'une fausse envoyée en même temps par une version
+  modifiée : seule une signature par appareil (piste d'évolution) le permettrait. Un tel appareil peut aussi
+  effacer ou abîmer des données (disponibilité, pas confidentialité). Rendre privé un évènement familial ne
+  l'efface pas tout de suite de l'historique du relais : jusqu'au prochain instantané, un appareil qui rejoint la
+  famille peut encore recevoir l'ancienne version. La fusion se fait par évènement entier (et non champ par champ) pour un évènement privé ; un membre
   qui ferait tourner une version modifiée de l'appli pourrait perturber un cercle dont il fait ou a fait partie
   (même limite que « membre malveillant » plus bas) ; si tous les appareils autorisés d'un cercle sont perdus sans
   sauvegarde, ses évènements deviennent illisibles.

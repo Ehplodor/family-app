@@ -173,6 +173,11 @@ async function passphraseKey(passphrase: string, salt: Bytes, iterations: number
  * 256 bits. Ce secret n'est transmis qu'aux appareils autorisés, chiffré pour chacun (sealToDevice).
  */
 export const deriveGroupKey = (secret: Bytes) => aesKeyFrom(secret, 'group-content-key');
+/**
+ * Identifiant d'une clé de cercle, dérivé de son secret : une enveloppe qui annoncerait un autre secret sous
+ * cet identifiant (document réécrit par un appareil malveillant) est rejetée.
+ */
+export const deriveGroupKeyId = async (secret: Bytes) => hex(await hkdfBytes(secret, 'group-key-id', 16));
 
 /** Clé aléatoire à usage unique pour un élément partagé par plusieurs cercles (octets bruts + clé AES). */
 export async function newItemKey(): Promise<{ raw: Bytes; key: CryptoKey }> {

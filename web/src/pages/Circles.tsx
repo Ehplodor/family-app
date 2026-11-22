@@ -143,7 +143,7 @@ export function CirclesSheet() {
           </li>
         ))}
       </ul>
-      {!list.length && personal !== 'waiting' && <p className="muted small">Préparation de votre cercle personnel…</p>}
+      {personal === 'none' && <PersonalNotice />}
 
       <FieldGroup label="Mes nouveaux évènements sont visibles par">
         <div className="segmented">
@@ -191,6 +191,22 @@ export function CirclesSheet() {
   );
 }
 
+/** Le cercle « Moi seul » est créé par l'appareil le plus ancien du membre (voir GroupManager.ensurePersonal). */
+function PersonalNotice() {
+  const groups = useGroups();
+  const engine = useEngine();
+  const { member } = useMe();
+  const oldest = groups.oldestDeviceOf(member.id);
+  if (!oldest || oldest === engine.deviceId) return <p className="muted small">Préparation de votre cercle « Moi seul »…</p>;
+  const label = engine.replica.get<{ label?: string }>('devices', oldest)?.label ?? 'votre premier appareil';
+  return (
+    <p className="banner-info small">
+      🔒 Votre cercle « Moi seul » sera créé par votre appareil le plus ancien ({label}) à sa prochaine ouverture, puis il
+      pourra autoriser celui-ci. S'il n'est plus utilisé, retirez-le dans <b>Sécurité</b>.
+    </p>
+  );
+}
+
 function GroupRow({ group: g, open, onToggle, onError }: { group: GroupInfo; open: boolean; onToggle: () => void; onError: (e: string) => void }) {
   const groups = useGroups();
   const engine = useEngine();
@@ -235,11 +251,22 @@ function GroupRow({ group: g, open, onToggle, onError }: { group: GroupInfo; ope
           qui y a accès doit vous autoriser de nouveau. Les anciens évènements restent lisibles ici.
         </p>
       )}
+      {g.conflict && (
+        <div className="banner-info small row-line">
+          <span className="grow">
+            ⚠️ Deux clés concurrentes existent pour ce cercle (changements simultanés, ou appareil suspect). Renouvelez la clé :
+            seuls les appareils listés dans « Détails » la recevront.
+          </span>
+          <button type="button" className="btn small" disabled={busy} onClick={() => act(() => groups.update(g.id, {}))}>
+            Renouveler
+          </button>
+        </div>
+      )}
       {pending.map((d) => (
         <div key={d.id} className="banner-info small row-line">
           <span className="grow">
-            <ShieldCheck size={14} /> <b>{d.label || 'Appareil'}</b> ({byId(d.memberId)?.name ?? '?'}) attend l'accès. Autorisez-le
-            seulement si c'est bien son appareil.
+            <ShieldCheck size={14} /> <b>{d.label || 'Appareil'}</b> ({byId(d.memberId)?.name ?? '?'}, arrivé le{' '}
+            {new Date(d.createdAt).toLocaleDateString('fr-FR')}) attend l'accès. Autorisez-le seulement si c'est bien son appareil.
           </span>
           <button type="button" className="btn small primary" disabled={busy} onClick={() => act(() => groups.grant(g.id, d.id))}>
             Autoriser

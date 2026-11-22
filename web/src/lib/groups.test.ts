@@ -8,13 +8,15 @@ vi.mock('./idb', () => ({
   put: async () => {},
 }));
 
-import { newDeviceKeys, newSecret, deriveGroupKey } from './crypto';
+import { newDeviceKeys, newSecret, deriveGroupKey, deriveGroupKeyId } from './crypto';
 import { randomId } from './bytes';
 import { Replica, type Op } from './replica';
 import { GroupManager, PRIVATE_EVENTS, PRIVATE_MESSAGES } from './groupManager';
 import {
   latestKey,
+  newGroupKey,
   openPrivate,
+  sealGroupSecret,
   pendingDevices,
   personalGroupId,
   sealPrivate,
@@ -39,8 +41,6 @@ describe('cercles : règles', () => {
   });
 
   it("n'attendent l'accès que les appareils non retirés des membres du cercle qui n'ont pas la clé", () => {
-    const g = randomId();
-    const k = 'a'.repeat(32);
     const pub = { kty: 'EC' };
     const devices = [
       { id: 'd1', memberId: 'rod', pub },
@@ -50,7 +50,7 @@ describe('cercles : règles', () => {
       { id: 'd5', memberId: 'julie' },
     ];
     const meta = { name: 'Parents', color: '#000', members: ['rod', 'julie'] };
-    expect(pendingDevices(meta, [kd(g, k, 0, 'd1')], g, devices).map((d) => d.id)).toEqual(['d2']);
+    expect(pendingDevices(meta, new Set(['d1']), devices).map((d) => d.id)).toEqual(['d2']);
   });
 
   it("l'identifiant du cercle personnel est le même sur tous les appareils d'un membre", async () => {
@@ -62,7 +62,7 @@ describe('cercles : règles', () => {
 
 async function heldKey(group = randomId(), epoch = 0): Promise<HeldKey> {
   const secret = newSecret();
-  return { group, keyId: randomId(), epoch, key: await deriveGroupKey(secret), secret };
+  return { group, keyId: await deriveGroupKeyId(secret), epoch, key: await deriveGroupKey(secret), secret };
 }
 
 describe('cercles : chiffrement des éléments', () => {
@@ -230,5 +230,83 @@ describe('cercles : plusieurs appareils', () => {
     const rec = rod.replica.allRecords((r) => r.c === PRIVATE_EVENTS && r.id === id)[0];
     expect(rec.del).toBeTruthy();
     expect((rec.f.box?.v as PrivateDoc['box']) ?? null).toBeNull();
+  });
+
+  /* ------------------------------------------------ appareil malveillant (version modifiée de l'appli) */
+
+  /** Ce que pourrait écrire un appareil de la famille qui n'a PAS la clé : une clé à lui, envoyée à tous. */
+  async function injectKey(attacker: Phone, group: string, epoch: number, sameIdAs?: string) {
+    const k = await newGroupKey(group, epoch, newSecret());
+    const keyId = sameIdAs ?? k.keyId;
+    for (const d of attacker.replica.list<{ pub: JsonWebKey }>('devices')) {
+      const env = await sealGroupSecret(d.pub, k.secret, group, keyId, epoch, d.id);
+      await attacker.replica.upsert('groupKeys', `${keyId}${d.id}`, { group, key: keyId, epoch, device: d.id, env, by: attacker.id, proof: 'faux', link: 'faux', pk: 'faux' });
+    }
+    await sync();
+    return k;
+  }
+
+  it("attaque : une clé fabriquée par un appareil sans accès n'est jamais adoptée", async () => {
+    const rod = await phone('rod');
+    const leo = await phone('leo');
+    await rod.groups.ensurePersonal();
+    await sync();
+    const perso = await personalGroupId('rod');
+    // Clé « plus récente » (époque 5), puis clé concurrente à la même époque que la vraie.
+    await injectKey(leo, perso, 5);
+    await injectKey(leo, perso, 0);
+    await rod.groups.saveEvent(randomId(), { title: 'Toujours secret' }, [perso]);
+    await sync();
+    expect(titles(rod)).toEqual(['Toujours secret']);
+    // Léo a toutes les clés qu'il a fabriquées : il ne lit pourtant rien.
+    for (const k of [await injectKey(leo, perso, 6)]) {
+      const docs = leo.replica.list<PrivateDoc>(PRIVATE_EVENTS);
+      for (const d of docs) expect(await openPrivate(PRIVATE_EVENTS, d.id, d.box, new Map([[k.keyId, k]]))).toBeNull();
+    }
+    expect(titles(leo)).toEqual([]);
+  });
+
+  it("attaque : une enveloppe réécrite avec un autre secret sous le même nom de clé est rejetée", async () => {
+    const rod = await phone('rod');
+    const leo = await phone('leo');
+    await rod.groups.ensurePersonal();
+    await sync();
+    const perso = await personalGroupId('rod');
+    const realKey = rod.groups.held.values().next().value!.keyId;
+    const fake = await injectKey(leo, perso, 0, realKey);
+    const id = randomId();
+    await rod.groups.saveEvent(id, { title: 'Pas pour Léo' }, [perso]);
+    await sync();
+    expect(titles(rod)).toEqual(['Pas pour Léo']);
+    const box = leo.replica.get<PrivateDoc>(PRIVATE_EVENTS, id)!.box;
+    expect(await openPrivate(PRIVATE_EVENTS, id, box, new Map([[realKey, { ...fake, keyId: realKey }]]))).toBeNull();
+  });
+
+  it("attaque : se déclarer « autorisé » sans la clé ne donne droit à aucun rappel ni notification", async () => {
+    const rod = await phone('rod');
+    const leo = await phone('leo');
+    await rod.groups.ensurePersonal();
+    await sync();
+    const perso = await personalGroupId('rod');
+    const keyId = rod.groups.held.values().next().value!.keyId;
+    // Léo écrit une fausse enveloppe à son nom pour la vraie clé (sans pouvoir prouver l'autorisation).
+    await leo.replica.upsert('groupKeys', `${keyId}${leo.id}`, { group: perso, key: keyId, epoch: 0, device: leo.id, env: '{}', by: leo.id, proof: 'faux' });
+    await sync();
+    expect(rod.groups.holders(perso).map((d) => d.id)).toEqual([rod.id]);
+  });
+
+  it("attaque : un appareil qui prend le profil de Rod ne crée pas son cercle personnel à sa place", async () => {
+    const rod = await phone('rod');
+    const impostor = await phone('rod');
+    await impostor.groups.ensurePersonal();
+    await sync();
+    expect(impostor.groups.list()).toEqual([]);
+    await rod.groups.ensurePersonal();
+    await sync();
+    const perso = await personalGroupId('rod');
+    expect(rod.groups.list().map((g) => g.id)).toEqual([perso]);
+    // L'imposteur attend une autorisation que Rod peut refuser.
+    expect(rod.groups.pending(perso).map((d) => d.id)).toEqual([impostor.id]);
+    expect(titles(impostor)).toEqual([]);
   });
 });
