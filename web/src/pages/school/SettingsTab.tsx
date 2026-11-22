@@ -1,7 +1,7 @@
 import type { Device } from '../../lib/engine';
 import { profileOf, type CopyKind, type SchoolProfile } from '../../lib/school';
 import { useCollection, useDoc, useEngine, useMembers } from '../../store';
-import { Field, FieldGroup, MemberChips } from '../../ui';
+import { Field, FieldGroup, MemberChips, TimeInput } from '../../ui';
 
 const DAY_NAMES = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
 const COPY_KINDS: [CopyKind, string][] = [
@@ -30,10 +30,10 @@ export function SettingsTab({ childId }: { childId: string }) {
         </Field>
         <div className="row">
           <Field label="Heure des devoirs">
-            <input type="time" value={p.studyTime} onChange={(e) => set({ studyTime: e.target.value })} />
+            <TimeInput required value={p.studyTime} onChange={(v) => set({ studyTime: v })} />
           </Field>
           <Field label="Mercredi / week-end">
-            <input type="time" value={p.freeDayTime} onChange={(e) => set({ freeDayTime: e.target.value })} />
+            <TimeInput required value={p.freeDayTime} onChange={(v) => set({ freeDayTime: v })} />
           </Field>
         </div>
         <Field label="Durée d'une séance">
@@ -70,7 +70,7 @@ export function SettingsTab({ childId }: { childId: string }) {
         <label className="toggle">
           <input type="checkbox" checked={!!p.bagTime} onChange={(e) => set({ bagTime: e.target.checked ? '19:30' : null })} />
           <span className="grow">Cartable de la veille</span>
-          {p.bagTime && <input type="time" className="inline-time" value={p.bagTime} onChange={(e) => set({ bagTime: e.target.value })} />}
+          {p.bagTime && <TimeInput required className="inline-time" value={p.bagTime} onChange={(v) => set({ bagTime: v })} />}
         </label>
         <Field label="Petites questions par jour">
           <select value={p.quizPerDay} onChange={(e) => set({ quizPerDay: Number(e.target.value) })}>
@@ -84,12 +84,12 @@ export function SettingsTab({ childId }: { childId: string }) {
           <div className="row">
             {Array.from({ length: p.quizPerDay }, (_, i) => (
               <Field key={i} label={`Question ${i + 1}`}>
-                <input
-                  type="time"
+                <TimeInput
+                  required
                   value={p.quizTimes[i] ?? ['07:45', '18:45', '12:30'][i]}
-                  onChange={(e) => {
+                  onChange={(v) => {
                     const quizTimes = [...p.quizTimes];
-                    quizTimes[i] = e.target.value;
+                    quizTimes[i] = v;
                     set({ quizTimes });
                   }}
                 />

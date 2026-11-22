@@ -3,7 +3,7 @@ import { Check, Repeat as RepeatIcon } from 'lucide-react';
 import { useCollection, useMe, useMembers } from '../store';
 import { relativeDay, today } from '../dates';
 import { nextDue, type TaskRepeat } from '../lib/recurrence';
-import { Avatar, Empty, Fab, Field, FieldGroup, MemberChips, Page, Sheet, confirmDelete } from '../ui';
+import { Avatar, Empty, Fab, Field, FieldGroup, MemberChips, Page, Sheet, confirmDelete, TimeInput } from '../ui';
 import type { Doc } from '../store';
 import { VisibleBy, useItemGroups, withGroups } from './Circles';
 
@@ -168,7 +168,7 @@ function TaskForm({ initial, onSubmit, onDelete }: { initial?: Task; onSubmit: (
           <input type="date" required value={t.due} onChange={(e) => set({ due: e.target.value })} />
         </Field>
         <Field label="Heure (option)">
-          <input type="time" value={t.time ?? ''} onChange={(e) => set({ time: e.target.value })} />
+          <TimeInput value={t.time ?? ''} onChange={(v) => set({ time: v })} />
         </Field>
       </div>
       <div className="row">
