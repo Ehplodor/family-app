@@ -121,9 +121,8 @@ export function CirclesSheet() {
   return (
     <div className="form">
       <p className="muted small">
-        « Toute la famille » est le cercle de base : tous les appareils admis dans la famille y ont accès. Les autres
-        cercles sont des groupes plus petits à l'intérieur : ce qui leur est réservé est chiffré une seconde fois, avec leur
-        propre clé, et reste illisible pour le reste de la famille.
+        Chaque cercle a sa propre clé : ce qui lui est réservé reste illisible pour les autres appareils. Tous les
+        appareils admis ont accès au cercle « Toute la famille ».
       </p>
       {personal === 'waiting' && (
         <p className="banner-info small">
@@ -256,7 +255,7 @@ function Offers({ offers, onError }: { offers: GroupOffer[]; onError: (e: string
   );
 }
 
-/** Le cercle de base : toute la famille (sa clé et ses appareils se gèrent dans Ma Famille et Sécurité). */
+/** Le cercle « Toute la famille » (ses appareils se gèrent dans Ma Famille et Sécurité). */
 function FamilyRow({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   const engine = useEngine();
   const { members, byId } = useMembers();
