@@ -83,6 +83,8 @@ export class SyncClient {
   constructor(
     readonly keys: CircleKeys,
     private replica: Replica,
+    /** Collections transmises (après la migration : seulement le nouveau format, signé). */
+    private shared: (collection: string) => boolean = () => true,
   ) {}
 
   private aad = (purpose: string) => `${this.keys.circleId}:${purpose}`;
@@ -224,7 +226,7 @@ export class SyncClient {
           // Le relais a perdu ou effacé l'historique : on repart de zéro et on renvoie tout.
           this.lastSeq = 0;
           await idb.put('kv', this.kv('seq'), 0);
-          this.pushRecords(this.replica.allRecords((r) => r.c !== '_rotation')).catch(() => {});
+          this.pushRecords(this.replica.allRecords((r) => r.c !== '_rotation' && this.shared(r.c))).catch(() => {});
         }
         await this.setSeq(m.seq ?? 0);
         this.setStatus(m.closed ? 'closed' : 'online');
@@ -272,7 +274,8 @@ export class SyncClient {
         // Paquet limité en taille : un gros document (calendrier importé…) part seul.
         const pending = chunkBySize(all)[0];
         try {
-          await this.send({ ops: pending.map(([, op]) => op) });
+          const ops = pending.map(([, op]) => op).filter((op) => this.shared(op.c));
+          if (ops.length) await this.send({ ops });
         } catch (err) {
           // Une seule modification trop volumineuse pour le relais : elle ne passera jamais.
           // On l'écarte (elle reste sur cet appareil) pour ne pas bloquer toute la synchronisation.
@@ -291,6 +294,7 @@ export class SyncClient {
   /** Envoie des documents complets (nouveau cercle, restauration de sauvegarde). */
   async pushRecords(records: DocRecord[]) {
     await this.whenReady();
+    records = records.filter((r) => this.shared(r.c));
     const CHUNK = 200;
     for (let i = 0; i < records.length; i += CHUNK) {
       for (const part of chunkBySize(records.slice(i, i + CHUNK))) await this.send({ records: part });
@@ -302,7 +306,7 @@ export class SyncClient {
     if (this.sinceSnap < SNAPSHOT_EVERY || !this.ready || this.lastSeq < 1) return;
     const outboxEmpty = !(await idb.entries('outbox', 1)).length;
     if (!outboxEmpty) return;
-    const records = this.replica.allRecords((r) => r.c !== '_rotation');
+    const records = this.replica.allRecords((r) => r.c !== '_rotation' && this.shared(r.c));
     const data = await sealJSON(this.keys.key, { records }, this.aad('snapshot'));
     if (data.length > 1_800_000) return;
     this.ws?.send(JSON.stringify({ t: 'snapshot', seq: this.lastSeq, data }));

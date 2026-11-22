@@ -1,7 +1,7 @@
 # Family App
 
-Application familiale **local-first** (PWA) : les données vivent sur vos téléphones et sont partagées dans le
-cercle familial **chiffrées de bout en bout**. Elle se publie sur **GitHub Pages** et s'appuie sur un petit relais
+Application familiale **local-first** (PWA) : les données vivent sur vos téléphones et sont partagées dans des
+**cercles** (la famille, les parents, un club…) **chiffrées de bout en bout**. Elle se publie sur **GitHub Pages** et s'appuie sur un petit relais
 « aveugle » (Cloudflare Worker gratuit) qui ne voit jamais vos données en clair.
 
 ![Aperçu : accueil, calendrier, liste, repas](docs/apercu.png)
@@ -15,9 +15,20 @@ cercle familial **chiffrées de bout en bout**. Elle se publie sur **GitHub Page
   et les modifications faites hors ligne partent au retour du réseau.
 - **Partage temps réel chiffré** : AES-256-GCM, clés générées et conservées uniquement sur les appareils. Le relais
   ne fait que stocker et rediffuser des paquets illisibles.
-- **Ajout d'appareil sécurisé** : QR code à usage unique (15 min), approbation par un membre, code de vérification
-  de 5 émojis, alerte « nouvel appareil » envoyée à toute la famille.
-- **Téléphone perdu** : on retire l'appareil, une nouvelle clé est transmise aux seuls appareils restants.
+- **Cercles** : « Famille », « Parents », « Moi seul »… Une personne peut être dans plusieurs cercles. Chaque élément
+  (évènement, liste, recette, photo…) indique **« Visible par »** : il n'est lisible que par les cercles choisis.
+- **Un admin par cercle** : son créateur. Lui seul invite, fait entrer et exclut. Il a une **clé de secours**
+  (masterkey) à garder dans un gestionnaire de mots de passe ; l'appli lui propose de la vérifier tous les 6 mois.
+  Il peut transmettre son rôle : l'ancienne clé est alors détruite et le nouvel admin en reçoit une nouvelle. Si
+  l'admin a perdu à la fois sa clé et son téléphone, **la majorité des autres membres** peut désigner un nouvel
+  admin, après 7 jours pendant lesquels l'ancien admin peut s'y opposer.
+- **Tout est signé** : chaque appareil signe ce qu'il écrit. Un appareil ne peut modifier que ce que les règles
+  permettent (par exemple, tout le monde coche la liste de courses, mais seul l'auteur d'un message le modifie).
+  Seul le propriétaire d'un élément le supprime pour tous ; les autres le masquent pour eux.
+- **Ajout d'appareil sécurisé** : QR code à usage unique (15 min), code de vérification de 5 émojis, approbation par
+  la personne elle-même (son nouvel appareil) ou par l'admin (nouvelle personne).
+- **Téléphone perdu** : *Cercles → Appareils → Déclarer perdu* depuis un autre appareil. Il ne reçoit plus rien et
+  ses nouvelles écritures sont refusées ; s'il est retrouvé, il peut être rétabli.
 - **Rappels, même appli fermée** : rendez-vous, résumé du matin, anniversaires (J-7 et jour J), tâches (et
   relances), repas du lendemain, planning de la semaine, messages, listes, et pour les enfants : travail du jour,
   cartable, petites questions de révision… Les rappels sont ciblés sur les
@@ -28,9 +39,9 @@ cercle familial **chiffrées de bout en bout**. Elle se publie sur **GitHub Page
 | Module | Ce qu'il fait |
 | --- | --- |
 | Listes | Listes partagées de quatre types : à cocher, **courses** (rangées par rayon), **simple** (à puces) et **projet** (colonnes à faire / en cours / fait, avec avancement). Ajout multiple (`lait, pain, œufs`), on voit qui a coché quoi |
-| Calendrier | Vue mois + agenda, événements récurrents ou sur plusieurs jours, attribués, avec un rappel réglable par événement. Plusieurs calendriers à cocher : famille, anniversaires, école, jours fériés, vacances scolaires (zone A, B ou C), et calendriers importés (fichier .ics, ou abonnement par adresse : Google, Outlook, iCloud, club de sport…) |
-| Messages | Fil de discussion familial |
-| Ma Famille | Membres, invitations d'appareils |
+| Calendrier | Vue mois + agenda, événements récurrents ou sur plusieurs jours, attribués, avec un rappel réglable par événement. Plusieurs calendriers à cocher : famille, anniversaires, école, jours fériés, vacances scolaires (zone A, B ou C), et calendriers importés (fichier .ics, ou abonnement par adresse : Google, Outlook, iCloud, club de sport…). « Visible par » : un ou plusieurs cercles |
+| Messages | Une conversation par cercle (« Moi seul » : notes personnelles) |
+| Ma Famille | Membres, invitations, **Cercles** (créer, inviter, exclure, transmettre l'admin, clé de secours, appareils) |
 | Contacts | Numéros utiles, appel, e-mail et carte en un geste |
 | Galerie | Photos réduites puis chiffrées avant l'envoi |
 | Anniversaires | Triés par date à venir, âge, idées cadeaux |
@@ -40,8 +51,24 @@ cercle familial **chiffrées de bout en bout**. Elle se publie sur **GitHub Page
 | Budget | Dépenses et entrées par mois, par catégorie |
 | **Réveils** | Propres à chaque appareil (transférables, jamais partagés), répétition d'un toucher, glisser pour arrêter, défis (calcul, mots à recopier), réveil en douceur, mode chevet. Appli fermée : notification + 2 relances (pas de sonnerie continue, voir l'architecture) |
 | Rappels | Notifications de l'appareil, préférences par membre, heures calmes, aperçu des prochains rappels |
-| Sécurité | Appareils, retrait d'un appareil, code du cercle, sauvegarde, effacement |
+| Sécurité | Appareils, renouvellement des clés, sauvegarde, effacement |
 | Personnaliser | Tuiles de l'accueil, ordre, couleur, nom de la famille |
+
+## Mise à jour vers les cercles signés (familles existantes)
+
+Cette version change le format des données. Le passage est **imposé** : une appli pas encore à jour ne communique
+plus avec les autres jusqu'à sa mise à jour (il suffit de la fermer complètement et de la rouvrir).
+
+1. **L'admin** (la personne qui a créé la famille) ouvre l'appli. Un écran *Mise à jour de la famille* s'affiche :
+   **Mettre à jour la famille**. Le cercle « Famille » est créé avec le nom actuel de la famille et tous ses membres.
+2. Un bandeau de l'accueil affiche ensuite la **clé de secours** (masterkey) : copiez-la dans un gestionnaire de mots de passe, puis confirmez.
+3. **Chaque autre appareil**, à sa prochaine ouverture, suit tout seul. Il faut que l'appareil de l'admin soit ouvert
+   au moins une fois après eux, pour les faire entrer dans le nouveau cercle.
+4. Chacun republie ses propres données (il en reste le propriétaire) ; l'appareil de l'admin republie celles des
+   enfants et des personnes sans appareil.
+
+Si l'admin n'utilise plus l'appli, un autre membre peut lancer la mise à jour à sa place depuis l'écran d'attente (**Je m'en occupe**).
+Les anciennes sauvegardes ne peuvent plus être restaurées : refaites-en une après la mise à jour.
 
 ## Mise en ligne (une fois, environ 15 minutes, possible depuis un téléphone)
 
@@ -165,8 +192,9 @@ soumis aux garde-fous.
 - **Android** : ouvrir l'adresse dans Chrome, puis menu ⋮ → *Installer l'application*.
 - **iPhone** : Safari → Partager → *Sur l'écran d'accueil*, puis **ouvrir depuis l'icône**. Le stockage de l'appli
   installée est séparé de Safari : rejoignez le cercle depuis l'appli installée.
-- Le premier membre crée le cercle. Chaque autre appareil : *J'ai une invitation* → scanner le QR code affiché par un
-  membre (*Ma Famille → Inviter*) → comparer les émojis → le membre approuve.
+- La première personne crée le cercle familial (elle en devient l'admin). Chaque autre appareil : *J'ai une
+  invitation* → scanner le QR code affiché par l'admin, ou par la personne elle-même pour son nouvel appareil
+  (*Ma Famille → Inviter*) → comparer les émojis → approuver.
 - Activez les rappels : *Ma Famille → Rappels → Activer les notifications*.
 
 ## Développement
@@ -196,7 +224,11 @@ web/src/
     crypto.ts      clés, chiffrement AES-GCM, ECDH, codes de vérification, sauvegardes
     replica.ts     données locales + fusion sans conflit (CRDT, horloge hybride)
     sync.ts        synchronisation chiffrée avec le relais (WebSocket)
-    engine.ts      cercle, appareils, renouvellement de clé, photos, sauvegardes
+    engine.ts      espace sur le relais, appareils, photos, sauvegardes, déménagement
+    circles.ts     cercles : chaînes de clés, membres signés, règles « qui peut modifier quoi »
+    vault.ts       éléments signés et chiffrés par cercle, admin, appareils perdus, relève
+    adminKey.ts    clé de secours de l'admin (masterkey), vérification périodique
+    migrate.ts     passage de l'ancien format aux cercles signés
     invite.ts      invitation avec approbation
     reminders.ts   calcul des rappels (fonction pure, testée)
     school.ts      espace école : planification des séances, répétition espacée, rappels enfant/parents
@@ -256,6 +288,8 @@ docs/              architecture et sécurité
      { id: 'notes', title: 'Notes', icon: StickyNote, color: '#F2B705', section: 'Organisation', Page: NotesPage, Summary: NotesSummary },
      ```
 
-  `useCollection` fournit `docs`, `create`, `update` (fusion champ par champ) et `remove` ; chaque document reçoit
-  automatiquement `id`, `createdBy` (le membre), `createdAt` et `updatedAt`.
+  `useCollection` fournit `docs`, `create`, `update` et `remove` ; chaque document reçoit automatiquement `id`,
+  `createdBy` (le propriétaire), `createdAt` et `updatedAt`, et il est visible par les cercles par défaut. Par
+  défaut, seul le propriétaire peut modifier un élément d'une nouvelle collection : pour que tous les membres du
+  cercle le puissent, ajoutez-la à `RULES` dans `web/src/lib/circles.ts` (`notes: 'all'`).
 - **Ajouter un type de rappel** : complétez `computeReminders` dans `web/src/lib/reminders.ts` (et son test).

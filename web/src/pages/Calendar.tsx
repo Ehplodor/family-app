@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
-import { Cake, ChevronLeft, ChevronRight, Layers, Search, X } from 'lucide-react';
-import { useCollection, useMembers } from '../store';
+import { Cake, ChevronLeft, ChevronRight, Layers, Lock, Search, X } from 'lucide-react';
+import { useCircles, useCollection, useMembers, useVault } from '../store';
+import { CirclesSheet, useDefaultGroups, VisibilityPicker } from './Circles';
 import { addMonths, capitalize, fmt, parseISODate, startOfWeek, addDays, toISODate, today } from '../dates';
 import { Avatar, Empty, Fab, Field, FieldGroup, MemberChips, Page, Sheet, confirmDelete } from '../ui';
 import type { Doc, Member } from '../store';
@@ -25,7 +26,23 @@ export type CalEvent = {
   notes?: string;
   /** Minutes avant le début ; null = aucun rappel ; -1 ou absent = réglage par défaut du membre. */
   reminder?: number | null;
+  /** Cercles qui voient l'évènement (portés par l'élément, voir lib/vault.ts). */
+  groups?: string[];
 };
+
+/** Champs d'un évènement tels qu'ils sont enregistrés (sans la liste des cercles, portée à part). */
+const EVENT_FIELDS = ['title', 'date', 'endDate', 'allDay', 'start', 'end', 'repeat', 'memberIds', 'notes', 'reminder'] as const;
+function eventFields(ev: CalEvent): CalEvent {
+  const out: Record<string, unknown> = {};
+  for (const k of EVENT_FIELDS) if (ev[k] !== undefined) out[k] = ev[k];
+  return out as CalEvent;
+}
+
+/** Cercle partagé le plus large (celui de toute la famille, en général). */
+function useMainCircle(): string | undefined {
+  const circles = useCircles();
+  return [...circles].filter((c) => !c.personal).sort((a, b) => b.members.length - a.members.length)[0]?.id;
+}
 
 export type Occurrence = {
   key: string;
@@ -37,18 +54,21 @@ export type Occurrence = {
   birthday?: boolean;
   /** Précision pour les événements sur plusieurs jours (« jusqu'au … »). */
   note?: string;
+  /** Évènement non visible par le cercle principal (réservé à des cercles restreints). */
+  private?: boolean;
 };
 
 export { occursOn };
 
 /** Tout ce qui se passe un jour donné (événements + anniversaires), trié. */
 export function useDayAgenda() {
-  const { docs: events } = useCollection<CalEvent>('events');
+  const events = useCollection<CalEvent>('events').docs;
   const { docs: birthdays } = useCollection<Birthday>('birthdays');
   const { docs: homework } = useCollection<Homework>('homework');
   const { docs: imported } = useCollection<ImportedCalendar>('calendars');
   const prefs = useCalendarPrefs();
   const { byId } = useMembers();
+  const main = useMainCircle();
   return useMemo(
     () =>
       (iso: string): Occurrence[] => {
@@ -78,6 +98,7 @@ export function useDayAgenda() {
               color: members[0]?.color ?? 'var(--accent)',
               members,
               event: e,
+              private: !!main && !e.groups?.includes(main),
               note: !end ? undefined : part === 'last' ? `depuis ${short(e.date)}` : `jusqu'au ${short(end)}`,
             };
           });
@@ -114,7 +135,7 @@ export function useDayAgenda() {
           ...(isShown(prefs, 'main') ? evs : []),
         ];
       },
-    [events, birthdays, homework, imported, prefs, byId],
+    [events, birthdays, homework, imported, prefs, byId, main],
   );
 }
 
@@ -132,7 +153,7 @@ export function AgendaList({ items, onOpen }: { items: Occurrence[]; onOpen?: (e
           <span className="agenda-time">{o.birthday ? <Cake size={18} /> : o.time || 'Journée'}</span>
           <span className="agenda-bar" style={{ background: o.color }} />
           <span className="grow">
-            {o.title}
+            {o.private && <Lock size={13} className="muted" aria-label="Privé" />} {o.title}
             {o.note && <small className="agenda-note">{o.note}</small>}
           </span>
           <span className="avatars">
@@ -150,7 +171,9 @@ const MAX_LANES = 2;
 const WEEKDAYS = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
 
 export function CalendarPage() {
-  const events = useCollection<CalEvent>('events');
+  const familyEvents = useCollection<CalEvent>('events');
+  const allEvents = useCollection<CalEvent>('events').docs;
+  const [circles, setCircles] = useState(false);
   const fullAgenda = useDayAgenda();
   const { members } = useMembers();
   // Filtre par personne (vide = tout le monde) et recherche : propres à cet écran, non partagés.
@@ -176,7 +199,7 @@ export function CalendarPage() {
   const lanes = useMemo(() => {
     const from = toISODate(visible[0]);
     const to = toISODate(visible[visible.length - 1]);
-    const spans = events.docs
+    const spans = allEvents
       .map((e) => ({ e, end: spanEnd(e) }))
       .filter((x): x is { e: Doc<CalEvent>; end: string } => !!x.end && x.e.date <= to && x.end >= from)
       .sort((a, b) => a.e.date.localeCompare(b.e.date) || b.end.localeCompare(a.end));
@@ -189,7 +212,15 @@ export function CalendarPage() {
       out.push({ ...x, lane });
     }
     return out;
-  }, [events.docs, visible[0].getTime(), visible.length]);
+  }, [allEvents, visible[0].getTime(), visible.length]);
+
+  /** Enregistre un évènement (ses cercles sont portés par l'élément, chiffré pour chacun). */
+  const save = async (editing: Doc<CalEvent> | 'new', ev: CalEvent, target: string[]) => {
+    const data = { ...eventFields(ev), groups: target };
+    if (editing === 'new') await familyEvents.create(data);
+    else await familyEvents.update(editing.id, data);
+  };
+  const remove = (e: Doc<CalEvent>) => familyEvents.remove(e.id);
   const { byId } = useMembers();
 
   const goToday = () => {
@@ -202,7 +233,7 @@ export function CalendarPage() {
       title="Calendrier"
       actions={
         <>
-          <button className="icon-btn compact" onClick={() => setChoosing(true)} aria-label="Calendriers affichés">
+          <button className="icon-btn compact badge-host" onClick={() => setChoosing(true)} aria-label="Calendriers affichés et cercles">
             <Layers size={22} />
           </button>
           <button
@@ -296,16 +327,34 @@ export function CalendarPage() {
 
       <Fab onClick={() => setEditing('new')} label="Nouvel événement" />
       <Sheet open={choosing} title="Calendriers" onClose={() => setChoosing(false)}>
-        {choosing && <CalendarsSheet />}
+        {choosing && (
+          <>
+            <button
+              type="button"
+              className="btn circles-btn"
+              onClick={() => {
+                setChoosing(false);
+                setCircles(true);
+              }}
+            >
+              <Lock size={16} /> Cercles : qui voit quoi
+            </button>
+            <CalendarsSheet />
+          </>
+        )}
+      </Sheet>
+      <Sheet open={circles} title="Cercles" onClose={() => setCircles(false)}>
+        {circles && <CirclesSheet />}
       </Sheet>
       <Sheet open={!!editing} title={editing === 'new' ? 'Nouvel événement' : "Modifier l'événement"} onClose={() => setEditing(null)}>
         {editing && (
           <EventForm
             initial={editing === 'new' ? undefined : editing}
             defaultDate={selected}
-            onSubmit={async (ev) => {
-              if (editing === 'new') await events.create(ev);
-              else await events.update(editing.id, ev);
+            onSubmit={async (ev, target) => {
+              const removed = editing !== 'new' && (editing.groups ?? []).some((g) => !target.includes(g));
+              if (removed && !confirm("Les appareils qui ont déjà reçu cet évènement l'ont vu. Il ne sera plus visible que par les cercles choisis. Continuer ?")) return;
+              await save(editing, ev, target);
               setEditing(null);
             }}
             onDelete={
@@ -313,7 +362,7 @@ export function CalendarPage() {
                 ? undefined
                 : () => {
                     if (confirmDelete(`« ${editing.title} »`)) {
-                      events.remove(editing.id);
+                      remove(editing);
                       setEditing(null);
                     }
                   }
@@ -333,13 +382,19 @@ function EventForm({
 }: {
   initial?: CalEvent;
   defaultDate: string;
-  onSubmit: (e: CalEvent) => void;
+  onSubmit: (e: CalEvent, groups: string[]) => void;
   onDelete?: () => void;
 }) {
-  const { members } = useMembers();
+  const { members: everyone } = useMembers();
+  const vault = useVault();
+  const defaultGroups = useDefaultGroups();
   const [ev, setEv] = useState<CalEvent>(
     initial ?? { title: '', date: defaultDate, allDay: false, start: '09:00', end: '10:00', repeat: 'none', memberIds: [], notes: '' },
   );
+  const [target, setTarget] = useState<string[]>(initial?.groups?.length ? initial.groups : defaultGroups);
+  // Un évènement ne concerne que des membres de ses cercles (les autres ne le verraient pas).
+  const allowed = target.length ? vault.membersOf(target) : null;
+  const members = allowed ? everyone.filter((m) => allowed.has(m.id)) : everyone;
   const set = (patch: Partial<CalEvent>) => setEv((e) => ({ ...e, ...patch }));
 
   return (
@@ -348,11 +403,15 @@ function EventForm({
       onSubmit={(e) => {
         e.preventDefault();
         if (!ev.title.trim()) return;
-        onSubmit({
-          ...ev,
-          title: ev.title.trim(),
-          endDate: ev.endDate && ev.endDate > ev.date && (ev.repeat ?? 'none') === 'none' ? ev.endDate : '',
-        });
+        onSubmit(
+          {
+            ...ev,
+            title: ev.title.trim(),
+            endDate: ev.endDate && ev.endDate > ev.date && (ev.repeat ?? 'none') === 'none' ? ev.endDate : '',
+            memberIds: allowed ? ev.memberIds.filter((id) => allowed.has(id)) : ev.memberIds,
+          },
+          target,
+        );
       }}
     >
       <Field label="Titre">
@@ -392,6 +451,9 @@ function EventForm({
           </Field>
         </div>
       )}
+      <FieldGroup label="Visible par">
+        <VisibilityPicker value={target} onChange={setTarget} />
+      </FieldGroup>
       <FieldGroup label="Qui ?">
         <MemberChips members={members} value={ev.memberIds} onChange={(memberIds) => set({ memberIds })} />
       </FieldGroup>

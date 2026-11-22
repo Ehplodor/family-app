@@ -154,6 +154,33 @@ test('notifications Web Push : immédiates, planifiées, contenu illisible pour 
   await new Promise((r) => setTimeout(r, 3500));
   assert.equal(received.length, 2);
   assert.equal(decrypt(received[1].body), 'RAPPEL');
+
+  // Rappels d'un cercle restreint : liste à part, que la liste principale n'efface pas (et inversement)
+  const group = hex();
+  await call('PUT', `/c/${circle}/part-schedule/${device}/${group}`, tok, { items: [{ at: Date.now() + 1500, payload: 'PRIVE' }] });
+  await call('PUT', `/c/${circle}/schedule/${device}`, tok, { items: [] });
+  await new Promise((r) => setTimeout(r, 3500));
+  assert.equal(received.length, 3);
+  assert.equal(decrypt(received[2].body), 'PRIVE');
+  // Une liste vide efface seulement cette liste
+  await call('PUT', `/c/${circle}/part-schedule/${device}/${group}`, tok, { items: [{ at: Date.now() + 1500, payload: 'RETIRE' }] });
+  await call('PUT', `/c/${circle}/part-schedule/${device}/${group}`, tok, { items: [] });
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.equal(received.length, 3);
+});
+
+test('rappels privés : identifiants contrôlés, jeton obligatoire, nombre de listes limité', async () => {
+  const circle = hex();
+  const tok = token();
+  await call('POST', `/c/${circle}/register`, null, { token: tok });
+  const device = hex();
+  const items = [{ at: Date.now() + 3600_000, payload: 'x' }];
+  assert.equal((await call('PUT', `/c/${circle}/part-schedule/${device}/${hex()}`, token(), { items })).status, 403);
+  assert.equal((await call('PUT', `/c/${circle}/part-schedule/${device}/pas-un-id`, tok, { items })).status, 404);
+  const statuses = [];
+  for (let i = 0; i < 17; i++) statuses.push((await call('PUT', `/c/${circle}/part-schedule/${device}/${hex()}`, tok, { items })).status);
+  assert.deepEqual(statuses.slice(0, 16), Array(16).fill(200));
+  assert.equal(statuses[16], 507);
 });
 
 test('invitation : boîte aux lettres à usage unique', async () => {

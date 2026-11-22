@@ -11,7 +11,7 @@ const STATUS_LABEL = {
   online: 'Synchronisé en temps réel',
   offline: 'Hors ligne : les modifications partiront dès le retour du réseau',
   denied: 'Accès refusé par le relais',
-  closed: 'Ce cercle a été fermé (clé renouvelée)',
+  closed: 'Cet espace a été fermé (clé changée ou migration)',
   full: "Espace de la famille plein sur le relais : supprimez des photos pour reprendre la synchronisation",
 } as const;
 
@@ -19,7 +19,7 @@ export function SecurityPage() {
   const engine = useEngine();
   const status = useSyncStatus();
   const { byId } = useMembers();
-  const { docs: devices } = useCollection<Device>('devices');
+  const { docs: devices } = useCollection<Device>('deviceInfo');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState('');
   const [pass, setPass] = useState('');
@@ -44,14 +44,6 @@ export function SecurityPage() {
     setBusy('');
   };
 
-  const revoke = (d: Device & { id: string }) => {
-    if (!window.confirm(`Retirer « ${d.label} » (${byId(d.memberId)?.name ?? '?'}) ? Une nouvelle clé sera créée et transmise uniquement aux autres appareils.`)) return;
-    run('Renouvellement de la clé…', async () => {
-      await engine.rotateKey([d.id]);
-      setMsg('Appareil retiré. Nouvelle clé en service.');
-    });
-  };
-
   const exportBackup = () =>
     run('Chiffrement de la sauvegarde…', async () => {
       const blob = await engine.exportBackup(pass, withPhotos);
@@ -65,8 +57,7 @@ export function SecurityPage() {
       setMsg('Sauvegarde téléchargée. Gardez la phrase secrète en lieu sûr : sans elle, le fichier est illisible.');
     });
 
-  const active = devices.filter((d) => !d.revoked);
-  const revoked = devices.filter((d) => d.revoked);
+  const active = devices.filter((d) => !d.revoked && d.owner === d.memberId);
   const passOk = pass.length >= 10 && pass === pass2;
 
   return (
@@ -113,29 +104,28 @@ export function SecurityPage() {
                 {byId(d.memberId)?.name ?? 'Membre inconnu'} · ajouté le {new Date(d.createdAt).toLocaleDateString('fr-FR')}
                 {d.id === engine.deviceId ? ' · cet appareil' : ''}
                 {d.push ? ' · notifications ✓' : ''}
+                {engine.vault.isLost(d.id) ? ' · déclaré perdu' : ''}
               </small>
             </span>
-            {d.id !== engine.deviceId && (
-              <button className="btn small danger" onClick={() => revoke(d)} disabled={!!busy}>
-                Retirer
-              </button>
-            )}
           </li>
         ))}
       </ul>
-      {revoked.length > 0 && <p className="muted small">{revoked.length} appareil(s) retiré(s) : ils n'ont plus accès aux nouvelles données.</p>}
+      <p className="muted small">
+        Un appareil perdu ou volé se déclare dans <a href="#/circles">Cercles</a> : il ne reçoit plus les nouvelles clés, et ce
+        qu'il écrirait ensuite est ignoré.
+      </p>
       <button
         className="btn wide"
         disabled={!!busy || !RELAY_URL}
         onClick={() =>
-          window.confirm('Créer une nouvelle clé pour le cercle ? Tous les appareils actuels la recevront automatiquement.') &&
-          run('Renouvellement de la clé…', async () => {
-            await engine.rotateKey([]);
-            setMsg('Nouvelle clé en service.');
+          window.confirm("Changer aussi la clé d'accès au relais ? Les appareils déclarés perdus ne recevront même plus les données chiffrées. Les autres suivent automatiquement.") &&
+          run('Changement de clé…', async () => {
+            await engine.renewSpace();
+            setMsg("Nouvelle clé d'accès au relais en service.");
           })
         }
       >
-        <KeyRound size={18} /> Renouveler la clé du cercle
+        <KeyRound size={18} /> Changer la clé d'accès au relais
       </button>
 
       <h3 className="apps-title">Sauvegarde chiffrée</h3>

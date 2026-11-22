@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ArrowDown, ArrowUp } from 'lucide-react';
-import type { FamilySettings, Member } from '../lib/engine';
+import type { FamilySettings } from '../lib/engine';
 import { useEngine, useMe } from '../store';
 import { DEFAULT_HOME, MODULES } from '../modules';
 import { ColorPicker, Field, FieldGroup, IconBadge, Page } from '../ui';
@@ -15,8 +15,13 @@ export function SettingsPage() {
   const settings = me.family.settings;
   const home = settings.homeModules ?? DEFAULT_HOME;
 
+  /** Le nom affiché est celui du cercle partagé principal ; les autres réglages sont un élément commun. */
   const save = async (patch: { name?: string; settings?: Omit<FamilySettings, 'name'> }) => {
-    await engine.replica.upsert<FamilySettings>('settings', 'family', { ...(patch.name ? { name: patch.name } : {}), ...patch.settings });
+    if (patch.name) {
+      const main = engine.vault.circles().filter((c) => !c.personal && c.writable).sort((a, b) => b.members.length - a.members.length)[0];
+      if (main) await engine.vault.updateCircle(main.id, { name: patch.name });
+    }
+    if (patch.settings) await engine.data.upsert<FamilySettings>('settings', 'family', patch.settings);
   };
 
   // Ordre affiché : d'abord les modules de l'accueil (dans leur ordre), puis les autres.
@@ -82,7 +87,7 @@ export function SettingsPage() {
         <MemberForm
           key={`${me.member.name}${me.member.color}`}
           initial={me.member}
-          onSubmit={(m) => engine.replica.update<Member>('members', me.member.id, m)}
+          onSubmit={(m) => engine.saveProfile(m)}
         />
       </div>
     </Page>

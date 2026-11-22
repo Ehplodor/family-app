@@ -1,14 +1,14 @@
 # Architecture : partage, sécurité et notifications
 
 Ce document explique **les choix faits pour Family App** : comment les données sont stockées, comment elles
-sont partagées dans le cercle familial, comment elles sont protégées et comment les rappels sont envoyés.
+sont partagées dans des cercles (famille, parents…), comment elles sont protégées et comment les rappels sont envoyés.
 
 ## Contraintes de départ
 
 1. **Appli PWA publiée sur GitHub Pages** : un hébergement de fichiers statiques. Il n'y a **pas de serveur** pour
    faire tourner du code.
 2. **Données enregistrées localement sur le téléphone**, utilisables hors ligne.
-3. **Partage en temps réel dans un cercle familial**, chiffré, avec une sécurité forte.
+3. **Partage en temps réel dans la famille et dans des cercles plus restreints**, chiffré, avec une sécurité forte.
 4. **Notifications fiables** pour tout ce qui mérite un rappel, **même appli fermée**.
 
 Deux limites techniques en découlent :
@@ -59,61 +59,139 @@ seul le transport changerait.
 
 ## Modèle de sécurité
 
-### Les clés
+### Deux étages : l'espace et les cercles
 
 ```
-Secret du cercle (256 bits aléatoires, ne quitte jamais un appareil en clair)
+ESPACE (un secret commun à tous les appareils, transport seulement)
    │ HKDF-SHA-256
-   ├── identifiant du cercle  → connu du relais (adresse de la boîte aux lettres)
-   ├── jeton d'accès           → le relais n'en garde que l'empreinte SHA-256
-   └── clé de contenu AES-256-GCM → chiffre TOUT : modifications, photos, notifications, instantanés
+   ├── identifiant de l'espace  → connu du relais (adresse de la boîte aux lettres)
+   ├── jeton d'accès            → le relais n'en garde que l'empreinte SHA-256
+   └── clé AES-256-GCM          → chiffre les paquets échangés avec le relais et les notifications
+
+CERCLES (« Famille », « Parents », « Moi seul »…, tous identiques)        web/src/lib/vault.ts
+   ├── secret du cercle, remis à chaque appareil autorisé, chiffré pour sa clé publique   → v2.keys
+   ├── description chiffrée (nom, couleur) + liste des membres signée par l'admin          → v2.circles
+   └── chaque élément (évènement, liste, message, photo…) :
+          clé à usage unique → chiffre l'élément ; cette clé est « emballée » pour chacun de ses cercles
+          le tout est SIGNÉ par l'appareil qui l'écrit                                    → v2.<collection>
 ```
 
-- **Chiffrement authentifié AES-256-GCM.** Chaque message a un vecteur d'initialisation (IV) aléatoire et des
-  « données associées » (identifiant du cercle + usage). Un message modifié est rejeté, et un message ne peut pas
-  être rejoué dans un autre contexte (une notification ne peut pas passer pour une modification de données).
-- **Chaque appareil a une paire de clés ECDH P-256**, dont la clé privée n'est pas exportable. Elle sert à lui
-  transmettre le secret du cercle de façon que **lui seul** puisse le lire.
-- **WebCrypto uniquement :** aucune bibliothèque de cryptographie tierce, aucun script chargé depuis un CDN.
+- L'espace ne sert qu'à transporter : on n'y voit que des appareils **anonymes** (`v2.devices` : deux clés publiques,
+  signées par l'appareil lui-même) et des paquets chiffrés pour des cercles. La famille n'est plus « la racine » :
+  c'est un cercle comme les autres, et une personne peut être dans plusieurs cercles sans lien entre eux.
+- **Chaque appareil a deux paires de clés P-256 non exportables** : ECDH (pour recevoir des secrets) et ECDSA (pour
+  signer). Son identifiant est l'**empreinte de ses deux clés publiques** : personne ne peut publier d'autres clés sous
+  l'identifiant d'un appareil existant.
+- **Chiffrement authentifié AES-256-GCM** partout, avec des « données associées » qui lient chaque paquet à son usage.
+  **WebCrypto uniquement :** aucune bibliothèque de cryptographie tierce, aucun script chargé depuis un CDN.
 
-### Ajouter un appareil : invitation avec approbation
+### Tout est signé, tout est vérifié sur l'appareil
 
-1. Un membre ouvre *Ma Famille → Inviter*. Un **secret d'invitation à usage unique, valable 15 minutes**, est
-   affiché sous forme de QR code ou de lien. **Il ne contient pas la clé du cercle.**
-2. Le nouvel appareil envoie une demande chiffrée qui contient sa clé publique.
-3. **Les deux écrans affichent un code de 5 émojis**, à comparer de vive voix ou en visio. Ce code est calculé à
-   partir du secret d'invitation et de la clé publique du demandeur.
-4. Le membre approuve. Le secret du cercle est alors chiffré **pour la clé publique de cet appareil précis**.
+Chaque document partagé est signé (ECDSA P-256) par l'appareil qui l'écrit. À la réception, chaque appareil vérifie
+(`web/src/lib/vault.ts`, règles dans `web/src/lib/circles.ts`, testé dans `vault.test.ts`) :
 
-Si le lien d'invitation fuite (capture d'écran, message intercepté), il ne suffit pas pour entrer dans le cercle.
-Il faut aussi l'approbation d'un membre, et l'intrus n'aura pas le bon code de vérification. Par ailleurs, chaque
-nouvel appareil déclenche une **alerte de sécurité** chez tous les membres.
+1. la signature, par un appareil connu (et non déclaré perdu à ce moment-là) ;
+2. que cet appareil est **autorisé** dans un des cercles de l'élément, pour un membre précis : son autorisation a été
+   validée par l'admin du cercle, ou remise par un autre appareil du **même** membre, ou reconduite lors d'un
+   renouvellement de clé. Un membre exclu ne peut plus écrire avec l'ancienne clé ;
+3. les **droits** : chaque élément a un propriétaire (son auteur). Lui seul le supprime pour tout le monde ou change
+   ses cercles ; les autres ne modifient que ce que permet le tableau ci-dessous, et « supprimer » ne le masque que
+   pour eux ;
+4. que la version est plus récente que la dernière bonne version gardée sur l'appareil.
 
-### Retirer un appareil (téléphone perdu, membre qui part) : renouvellement de clé
+Ce qui ne passe pas est **ignoré** : l'appareil garde la dernière bonne version. Un appareil qui ferait tourner une
+version modifiée de l'appli ne peut donc ni écrire au nom d'un autre, ni supprimer ce qui ne lui appartient pas, ni
+lire un cercle où il n'a pas été admis.
 
-1. Un nouveau secret est créé.
-2. Il est chiffré séparément pour chaque appareil **restant**, avec sa clé publique. Ces enveloppes sont
-   déposées dans l'ancien cercle.
-3. Les appareils restants basculent automatiquement vers le nouveau cercle, même s'ils étaient hors ligne : ils
-   trouvent leur enveloppe en revenant.
-4. L'appareil retiré ne peut ouvrir aucune enveloppe et ne reçoit plus rien. L'ancien cercle passe en lecture
-   seule, puis son contenu est effacé par le relais au bout de 30 jours.
-5. Le relais garde une **« pierre tombale »** de l'ancien cercle (l'empreinte de son jeton et la date de
-   fermeture, rien d'autre) tant qu'un appareil s'y présente. Ainsi, même si l'appareil retiré efface
-   l'ancien cercle, un appareil resté hors ligne apprend qu'il est fermé : il ne peut pas le « recréer » et
-   y renvoyer ses données, que l'appareil retiré pourrait lire.
+| Qui peut modifier l'élément d'un autre ? | Collections |
+| --- | --- |
+| Tous les membres des cercles qui le voient | agenda, anniversaires, articles de listes, contacts, repas, recettes, emploi du temps, leçons, devoirs, fiches de révision, réglages communs |
+| Seulement les champs « fait », « échéance », « fait par », « fait le » | tâches |
+| Personne d'autre que l'auteur | calendriers importés, listes, messages, photos, réveils, budget, profils École, profils, appareils, préférences |
+
+### Admin, masterkey et relève
+
+- Chaque cercle a **un admin** (son créateur au départ). Lui seul fait entrer une nouvelle personne, valide l'entrée de
+  ses appareils, l'exclut, ou transmet son rôle. Chacun ajoute lui-même ses propres appareils (approbation par un de
+  ses appareils déjà admis).
+- La liste des membres est **signée par la clé d'administration**. Chaque membre a la sienne, non exportable sur
+  l'appareil, et aussi chiffrée par une **masterkey** (32 caractères, 160 bits) que l'admin range dans un gestionnaire
+  de mots de passe : elle lui rend son rôle sur un nouveau téléphone. Elle peut être ré-affichée 30 secondes après
+  empreinte ou visage quand le téléphone le permet (WebAuthn « PRF ») ; sinon on peut seulement **vérifier** une
+  masterkey tapée. L'appli propose une vérification tous les 6 mois.
+- **Transmettre le rôle** : la nouvelle liste nomme la clé du nouvel admin et est signée par l'ancienne, qui ne vaut
+  plus rien pour ce cercle ensuite.
+- **Relève** (l'admin a perdu son téléphone ET sa masterkey) : un membre se propose ; si la **majorité des autres
+  membres** signe, il devient admin au bout de **7 jours**, sauf si l'ancien admin s'y oppose avec sa clé. Une
+  opposition vue une fois est gardée par chaque appareil.
+
+### Ajouter quelqu'un, ajouter un appareil
+
+1. *Cercles → Inviter* affiche un **secret d'invitation à usage unique, valable 15 minutes** (QR code ou lien). Il ne
+   contient aucune clé.
+2. Le nouvel appareil envoie une demande chiffrée avec ses clés publiques ; **les deux écrans affichent un code de
+   5 émojis** à comparer.
+3. Celui qui invite choisit : « un autre de mes appareils » (n'importe quel membre), ou « une nouvelle personne » /
+   « l'appareil de … » avec les cercles où la faire entrer (admin seulement). Les clés de ces cercles sont remises à
+   l'appareil, **toutes époques comprises** (il lit aussi ce qui a été écrit avant son arrivée), puis le secret de
+   l'espace lui est envoyé, chiffré pour lui seul.
+
+### Exclure, appareil perdu
+
+- **Exclure** quelqu'un d'un cercle (admin) : nouvelle liste des membres, puis nouvelle clé remise aux seuls appareils
+  restants. La personne garde ce qu'elle avait déjà vu, ne lit plus la suite, et ce qu'elle écrirait est ignoré. Ce
+  qu'elle avait écrit **avant** reste valable.
+- **Appareil perdu ou volé** : son membre, ou l'admin d'un de ses cercles, le **déclare perdu** (*Cercles →
+  Appareils*). Les cercles où il était autorisé changent de clé, et tout ce qu'il signerait ensuite est ignoré. Seul un
+  **autre** appareil peut annuler la déclaration (« Retrouvé ») : les nouvelles clés lui sont alors remises. *Sécurité
+  → Changer la clé d'accès au relais* déménage en plus tout le monde vers un nouvel espace, pour qu'il ne reçoive même
+  plus les paquets chiffrés.
 
 > Limite inhérente à tout système : un appareil retiré **garde les données qu'il avait déjà**. Le renouvellement
 > protège l'avenir, pas le passé.
+
+### Déménagement de l'espace et migration
+
+Un déménagement (`v2.move`, signé) dépose dans l'ancien espace le nouveau secret chiffré pour chaque appareil gardé ;
+l'ancien espace passe en lecture seule, puis est effacé par le relais au bout de 30 jours (avec une « pierre
+tombale » qui l'empêche d'être recréé).
+
+**Passage de l'ancien format (version précédente de l'appli) — changement imposé** (`web/src/lib/migrate.ts`) :
+l'appareil du créateur de la famille (« admin ») lance la mise à jour. Le cercle « Famille » est créé avec le nom
+actuel de la famille et tous ses membres, et un nouvel espace est remis aux anciens appareils. Chaque appareil mis à
+jour suit, est reconnu à sa clé de l'ancien format et admis par l'admin, puis republie **ses** données (il en reste
+l'auteur) ; l'admin republie celles des personnes sans appareil. Les applis pas encore à jour restent sur l'ancien
+espace fermé : **elles ne communiquent plus jusqu'à leur mise à jour**. Au-delà de 30 jours, l'ancien espace est
+effacé : un appareil mis à jour plus tard doit être invité à nouveau.
+
+### Autres précautions
+
+- **Résistance au sabotage** : autorisations, déclarations de perte, oppositions et dernières bonnes versions sont
+  gardées sur chaque appareil ; un document écrasé dans l'espace ne les efface pas. Les clés publiques d'un appareil
+  voyagent avec chacune de ses autorisations.
+- **Clés concurrentes** (deux renouvellements simultanés) : on garde celle dont les appareils sont inclus dans ceux de
+  l'autre ; sinon l'écriture est bloquée et l'appli propose de renouveler la clé.
+- **Photos** : chacune est chiffrée avec sa propre clé, rangée dans l'élément (chiffré pour ses cercles).
+- **Rappels** : chaque appareil a une liste à part **par cercle**, calculée seulement par les appareils autorisés de
+  ce cercle, avec les seuls éléments qu'il voit (`PUT /c/<espace>/part-schedule/<appareil>/<cercle>`, au plus 16 par
+  appareil). La liste principale ne contient que les réveils de l'appareil.
+- **Sauvegarde** : chiffrée par phrase secrète, elle contient les clés des cercles de l'appareil. Un appareil restauré
+  peut tout relire ; pour écrire, il doit être admis (par un de ses autres appareils ou par l'admin).
+- **Limites** : le code de 5 émojis ne protège que si on le compare vraiment. Un membre peut toujours renouveler la
+  clé d'un cercle en laissant de côté d'autres appareils : ils voient « plus d'accès » et l'admin peut les faire
+  rentrer. Un appareil qui arrive ne reçoit que la version actuelle d'un élément : si un appareil malveillant l'a
+  écrasée, il en est privé (sans jamais lire un faux). Avec une seule masterkey et sans relève possible (cercle de
+  deux personnes dont l'admin), un admin qui a tout perdu ne peut pas être remplacé.
 
 ### Ce que le relais voit (métadonnées)
 
 | Le relais connaît | Le relais ne connaît pas |
 | --- | --- |
 | Un identifiant de cercle aléatoire | Le nom de la famille, les prénoms |
-| Des identifiants d'appareils aléatoires | Le contenu des listes, de l'agenda, des messages, des photos |
+| Des identifiants d'appareils (empreintes de clés) | Le contenu des listes, de l'agenda, des messages, des photos |
 | La taille et l'heure des paquets chiffrés | Le titre et le texte des notifications |
 | L'**heure** d'envoi des rappels planifiés | La clé du cercle, et le jeton d'accès en clair (seulement son empreinte) |
+| Pour chaque appareil, le nombre de cercles dont il reçoit des rappels (identifiants aléatoires) | Le nom, les membres et le contenu des cercles |
 | L'adresse des services push (Google, Apple, Mozilla) | Qui a écrit quoi |
 
 **Seule exception, choisie par l'utilisateur : les abonnements à un calendrier en ligne (.ics).** Les sites de
@@ -133,7 +211,7 @@ Les jours fériés (calculés) et les vacances scolaires (données embarquées d
 
 Les services push des navigateurs (FCM, APNs, Mozilla) ne voient eux aussi que du chiffré : les notifications
 sont chiffrées une première fois pour le navigateur (RFC 8291), et leur contenu est déjà chiffré une seconde fois
-avec la clé du cercle.
+avec la clé de l'espace.
 
 ### Un relais partagé par de nombreuses familles
 
@@ -165,7 +243,7 @@ multiplier les cercles « anciens » à partir d'un seul.
 | Piratage du relais, de Cloudflare, ou d'un service push | Chiffrement de bout en bout : aucune donnée lisible |
 | Écoute du réseau | HTTPS/WSS + chiffrement de bout en bout |
 | Lien d'invitation intercepté | Usage unique, 15 min, approbation, code de vérification, alerte « nouvel appareil » |
-| Téléphone perdu ou volé | Retrait de l'appareil avec renouvellement de clé ; verrouillage et chiffrement du téléphone par le système |
+| Téléphone perdu ou volé | Déclaration de perte (nouvelles clés, écritures ignorées), changement de clé d'accès au relais ; verrouillage et chiffrement du téléphone par le système |
 | Altération ou rejeu de messages par le relais | AES-GCM authentifié, données associées au contexte |
 | Données effacées par le navigateur | Demande de stockage persistant + **sauvegarde chiffrée** (PBKDF2 600 000 itérations + AES-256-GCM) |
 | Code malveillant injecté dans la page | Politique CSP stricte : code et connexions limités à l'appli et au relais configuré ; liens des recettes limités à `http(s)` |
@@ -174,7 +252,8 @@ multiplier les cercles « anciens » à partir d'un seul.
 | **Autre site sur la même origine** | ⚠️ Toutes les pages `https://<compte>.github.io/*` partagent la même origine, donc le même stockage. **N'hébergez pas d'autres projets GitHub Pages sur ce compte, ou utilisez un domaine personnalisé** (ex. `famille.mondomaine.fr`). |
 | Visiteur malveillant qui crée des cercles en masse ou remplit l'espace | Limites de création (par connexion et au total, par jour), quota progressif par cercle, effacement des cercles abandonnés |
 | Autre site (fork) qui se branche sur votre relais | `ALLOWED_ORIGINS` (navigateurs), et dans tous les cas les mêmes garde-fous |
-| Membre malveillant dans le cercle | Hors périmètre : tous les appareils du cercle sont de confiance. Un membre pourrait écrire au nom d'un autre. |
+| Membre malveillant dans un cercle | Il ne peut ni écrire au nom d'un autre (signatures), ni supprimer ou modifier au-delà de ses droits, ni faire entrer quelqu'un (admin seulement). Il peut lire ce que le cercle voit et écrire ce que ses droits permettent. |
+| Appareil de la famille (version modifiée) | Il ne lit aucun cercle où il n'a pas été admis, ne peut pas faire adopter une fausse clé ni une fausse liste de membres, ni abîmer un élément sur les appareils qui en ont la bonne version ; un membre exclu ne lit pas la suite. |
 
 ## Synchronisation : comment les modifications se fusionnent
 

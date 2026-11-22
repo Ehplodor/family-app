@@ -19,6 +19,7 @@ import { useCollection, useDoc, useEngine, useLocalState, useMe, useNotifier, ty
 import { SAVER_LABEL, Screensaver, type SaverKind } from './Screensaver';
 import { navigate } from '../router';
 import { Empty, Fab, Field, FieldGroup, Page, Sheet, confirmDelete } from '../ui';
+import { VisibleBy, useItemGroups, withGroups } from './Circles';
 
 export type { Alarm };
 
@@ -32,7 +33,7 @@ function useMyAlarms() {
 }
 
 function useMyDevices() {
-  const { docs } = useCollection<Device>('devices');
+  const { docs } = useCollection<Device>('deviceInfo');
   const me = useMe();
   return docs.filter((d) => d.memberId === me.member.id && !d.revoked);
 }
@@ -87,7 +88,7 @@ export function AlarmWatcher() {
       const from = last.current;
       last.current = now;
       if (location.hash.includes('/alarms/ring/')) return;
-      const mine = engine.replica.list<Alarm>('alarms').filter((a) => a.deviceId === engine.deviceId && a.memberId === engine.memberId);
+      const mine = engine.data.list<Alarm>('alarms').filter((a) => a.deviceId === engine.deviceId && a.memberId === engine.memberId);
       const due: LocalSnooze[] = [
         ...mine.flatMap((a) => ringsBetween(a, from, now).map((at) => ({ id: a.id, at }))),
         ...readSnoozes().filter((s) => s.at > from && s.at <= now),
@@ -117,7 +118,7 @@ function AlarmList() {
   const me = useMe();
   const alarms = useMyAlarms();
   const devices = useMyDevices();
-  const myDevice = useDoc<Device>('devices', engine.deviceId);
+  const myDevice = useDoc<Device>('deviceInfo', engine.deviceId);
   const [editing, setEditing] = useState<Doc<Alarm> | 'new' | null>(null);
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -244,6 +245,7 @@ function AlarmForm({
   onSubmit: (a: Alarm) => void;
   onDelete?: () => void;
 }) {
+  const [groups, setGroups] = useItemGroups(initial);
   const [a, setA] = useState<Alarm>(
     initial ?? { ...defaults, time: '07:00', days: [], enabled: true, mode: 'simple', gentle: false, snoozeMin: DEFAULT_SNOOZE },
   );
@@ -254,7 +256,7 @@ function AlarmForm({
       className="form"
       onSubmit={(e) => {
         e.preventDefault();
-        onSubmit({ ...a, label: a.label?.trim() || undefined });
+        onSubmit(withGroups({ ...a, label: a.label?.trim() || undefined }, groups));
       }}
     >
       <Field label="Heure">
@@ -311,6 +313,7 @@ function AlarmForm({
           </select>
         </Field>
       )}
+      <VisibleBy value={groups} onChange={setGroups} />
       <div className="form-actions">
         {onDelete && (
           <button type="button" className="btn danger" onClick={onDelete}>
@@ -424,7 +427,7 @@ function RingScreen({ id, at }: { id: string; at: number }) {
   const finish = async () => {
     await markAlarmDone(id, at);
     await closeAlarmNotifications(id);
-    if (alarm && !alarm.days.length) await engine.replica.update<Alarm>('alarms', id, { enabled: false });
+    if (alarm && !alarm.days.length) await engine.data.update<Alarm>('alarms', id, { enabled: false });
     leave();
   };
   const snooze = async () => {
@@ -434,7 +437,7 @@ function RingScreen({ id, at }: { id: string; at: number }) {
     await closeAlarmNotifications(id);
     writeSnoozes([...readSnoozes(), { id, at: next }]);
     // Au cas où l'appli serait fermée d'ici là.
-    if (engine.replica.get<Device>('devices', engine.deviceId)?.push) notifier.snoozeAlarm(alarm, next).catch(() => {});
+    if (engine.data.get<Device>('deviceInfo', engine.deviceId)?.push) notifier.snoozeAlarm(alarm, next).catch(() => {});
     leave();
   };
 

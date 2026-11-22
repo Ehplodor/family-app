@@ -4,6 +4,7 @@ import { useCollection } from '../store';
 import { daysBetween, fmt, nextAnnual, pad, parseISODate, today } from '../dates';
 import { Empty, Fab, Field, Page, Sheet, confirmDelete } from '../ui';
 import type { Doc } from '../store';
+import { VisibleBy, useItemGroups, withGroups } from './Circles';
 
 export type Birthday = { name: string; day: number; month: number; year?: number | null; notes?: string };
 
@@ -92,6 +93,7 @@ function BirthdayForm({
   onSubmit: (b: Birthday) => void;
   onDelete?: () => void;
 }) {
+  const [groups, setGroups] = useItemGroups(initial);
   const [name, setName] = useState(initial?.name ?? '');
   const [date, setDate] = useState(
     initial ? `${initial.year ?? 2000}-${pad(initial.month)}-${pad(initial.day)}` : '',
@@ -106,7 +108,7 @@ function BirthdayForm({
         e.preventDefault();
         if (!name.trim() || !date) return;
         const [y, m, d] = date.split('-').map(Number);
-        onSubmit({ name: name.trim(), day: d, month: m, year: unknownYear ? null : y, notes });
+        onSubmit(withGroups({ name: name.trim(), day: d, month: m, year: unknownYear ? null : y, notes }, groups));
       }}
     >
       <Field label="Prénom / nom">
@@ -122,6 +124,7 @@ function BirthdayForm({
       <Field label="Idées cadeaux, notes">
         <textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} />
       </Field>
+      <VisibleBy value={groups} onChange={setGroups} />
       <div className="form-actions">
         {onDelete && (
           <button type="button" className="btn danger" onClick={onDelete}>

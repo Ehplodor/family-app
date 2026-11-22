@@ -9,6 +9,9 @@ import { AppsPage } from './pages/Apps';
 import { SettingsPage, DEFAULT_ACCENT } from './pages/Settings';
 import { ChooseMember, Onboarding } from './pages/Onboarding';
 import { SecurityPage } from './pages/Security';
+import { CirclesPage } from './pages/Circles';
+import { InvitePanel } from './pages/Invite';
+import { MigrationScreen } from './pages/Migration';
 import { NotificationsPage } from './pages/Notifications';
 import { AboutPage } from './pages/About';
 import { AlarmWatcher } from './pages/Alarms';
@@ -61,6 +64,13 @@ function Shell() {
   }
   if (first === 'settings') return <SettingsPage />;
   if (first === 'security') return <SecurityPage />;
+  if (first === 'circles') return <CirclesPage />;
+  if (first === 'invite')
+    return (
+      <Page title="Inviter / ajouter un appareil" back="/circles">
+        <InvitePanel onDone={() => history.back()} />
+      </Page>
+    );
   if (first === 'notifications') return <NotificationsPage />;
   if (first === 'about') return <AboutPage back="/security" />;
   if (first === 'join') {
@@ -114,6 +124,7 @@ function Gate() {
   if (error) return <div className="onboarding"><Empty>Impossible d'ouvrir le stockage local : {error}</Empty></div>;
   if (state === 'loading') return <div className="splash" />;
   if (state === 'setup') return <Onboarding />;
+  if (state === 'migrate') return <MigrationScreen />;
   if (state === 'choose-member') return <ChooseMember />;
   if (state === 'removed') return <Removed />;
   return (

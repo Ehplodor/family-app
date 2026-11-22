@@ -115,8 +115,10 @@ function LessonForm({ childId, initial, subjects, onClose }: { childId: string; 
     let id = initial?.id;
     if (initial) await lessons.update(initial.id, { subject: subject.trim(), title: title.trim() });
     else id = (await lessons.create({ childId, subject: subject.trim(), title: title.trim() })).id;
+    // Les fiches sont visibles par les mêmes cercles que leur leçon.
+    const groups = engine.data.get('lessons', id!)?.groups;
     for (const p of parsed) {
-      await engine.replica.create<Card>('cards', { childId, lessonId: id, subject: subject.trim(), question: p.question, answer: p.answer, box: 1, due: today() });
+      await engine.data.create<Card>('cards', { childId, lessonId: id, subject: subject.trim(), question: p.question, answer: p.answer, box: 1, due: today(), groups });
     }
     onClose();
   };
@@ -167,7 +169,7 @@ function LessonForm({ childId, initial, subjects, onClose }: { childId: string; 
             className="btn danger"
             onClick={async () => {
               if (!confirmDelete(`la leçon « ${initial.title} » et ses questions`)) return;
-              await engine.replica.removeMany('cards', existing.map((c) => c.id));
+              await engine.data.removeMany('cards', existing.map((c) => c.id));
               await lessons.remove(initial.id);
               onClose();
             }}

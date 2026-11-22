@@ -12,7 +12,7 @@ type Result = Occurrence & { date: string; until?: string };
 
 /** Recherche d'événements : un appui sur un résultat ouvre le jour correspondant dans le calendrier. */
 export function CalendarSearch({ filter, onPick }: { filter: string[]; onPick: (iso: string) => void }) {
-  const { docs: events } = useCollection<CalEvent>('events');
+  const events = useCollection<CalEvent>('events').docs;
   const { docs: birthdays } = useCollection<Birthday>('birthdays');
   const { byId } = useMembers();
   const [query, setQuery] = useState('');

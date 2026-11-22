@@ -1,5 +1,6 @@
-import { BellRing, Cloud, CloudOff, HardDrive, Sparkles, X } from 'lucide-react';
-import { useDoc, useEngine, useLocalState, useMe, useNotifier, useSyncStatus } from '../store';
+import { useEffect, useState } from 'react';
+import { BellRing, Cloud, CloudOff, HardDrive, KeyRound, Sparkles, X } from 'lucide-react';
+import { useCircles, useDoc, useEngine, useLocalState, useMe, useNotifier, useSyncStatus } from '../store';
 import type { Device } from '../lib/engine';
 import { pushSupported } from '../lib/notify';
 import { RELAY_URL } from '../lib/sync';
@@ -54,7 +55,7 @@ function SyncBadge() {
 function PushBanner() {
   const engine = useEngine();
   const notifier = useNotifier();
-  const device = useDoc<Device>('devices', engine.deviceId);
+  const device = useDoc<Device>('deviceInfo', engine.deviceId);
   const [dismissed, setDismissed] = useLocalState('pushBannerDismissed', false);
   if (!RELAY_URL || dismissed || device?.push || notifier.permission() === 'denied') return null;
   if (!pushSupported() && !/iPhone|iPad/.test(navigator.userAgent)) return null;
@@ -69,6 +70,28 @@ function PushBanner() {
         <X size={18} />
       </button>
     </div>
+  );
+}
+
+/** L'admin d'un cercle partagé doit ranger (ou vérifier) sa masterkey. */
+function MasterkeyBanner() {
+  const engine = useEngine();
+  const circles = useCircles();
+  const [show, setShow] = useState<'' | 'save' | 'check'>('');
+  const admin = circles.some((c) => c.isAdmin && !c.personal);
+  useEffect(() => {
+    if (!admin) return;
+    Promise.all([engine.adminKeys.pending(), engine.adminKeys.checkDue()]).then(([p, d]) => setShow(p ? 'save' : d ? 'check' : ''));
+  }, [engine, admin, circles]);
+  if (!show) return null;
+  return (
+    <button className="card push-banner" onClick={() => navigate('/circles')}>
+      <KeyRound size={28} className="accent-text" />
+      <span className="grow">
+        <strong>{show === 'save' ? 'Rangez votre masterkey d’admin' : 'Vérifiez votre masterkey d’admin'}</strong>
+        <small className="block">{show === 'save' ? 'Elle vous rendra votre rôle sur un nouveau téléphone.' : 'Un petit contrôle tous les 6 mois.'}</small>
+      </span>
+    </button>
   );
 }
 
@@ -87,6 +110,7 @@ export function HomePage() {
         </button>
       </header>
       <InstallCard compact />
+      <MasterkeyBanner />
       <PushBanner />
       <TodayCard />
       <div className="tiles">

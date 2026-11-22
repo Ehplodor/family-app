@@ -14,6 +14,7 @@ const MAX_SNAPSHOT = 1900 * 1024;
 const MAX_BLOB = 1900 * 1024; // une photo chiffrée (réduite par l'appli avant envoi)
 const DAY = 86_400_000;
 const MAX_SCHEDULE = 300; // rappels planifiés par appareil
+const MAX_PARTS = 16; // listes de rappels « à part » par appareil (une par cercle restreint)
 const MAX_PAYLOAD = 3000; // contenu chiffré d'une notification
 const CLOSED_RETENTION = 30 * 24 * 3600 * 1000; // après rotation de clé
 const MAX_QUEUE = MAX_SCHEDULE * 20; // rappels en attente pour tout le cercle (≈ 20 appareils)
@@ -249,7 +250,7 @@ export class Circle extends DurableObject<Env> {
 
   private async route(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const [, , action, arg] = url.pathname.split('/').filter(Boolean);
+    const [, , action, arg, sub] = url.pathname.split('/').filter(Boolean);
     const m = request.method;
     // Identifiant du cercle (sert à désigner le successeur lors d'un renouvellement de clé).
     const ownId = url.pathname.split('/').filter(Boolean)[1];
@@ -370,6 +371,26 @@ export class Circle extends DurableObject<Env> {
       this.sql.exec("DELETE FROM queue WHERE device = ? AND source = 'schedule'", arg);
       this.checkQueueRoom(items.length);
       for (const it of items) this.insertQueue({ ...it, device: arg }, 'schedule');
+      await this.rescheduleAlarm();
+      return Response.json({ ok: true, count: items.length });
+    }
+
+    // Rappels des évènements privés d'un cercle restreint : une liste à part, remplacée seule (la liste
+    // principale, envoyée par des appareils qui ne voient pas ces évènements, ne doit pas l'effacer).
+    // `sub` est un identifiant aléatoire : le relais ne sait rien du cercle restreint. Route distincte de
+    // `schedule` : une ancienne version du relais répond 404 au lieu de remplacer la liste principale.
+    if (action === 'part-schedule' && arg && DEVICE_RE.test(arg) && sub && DEVICE_RE.test(sub) && m === 'PUT') {
+      this.notClosed();
+      const { items } = (await request.json()) as { items: QueueItem[] };
+      if (!Array.isArray(items) || items.length > MAX_SCHEDULE) throw new HttpError(400, 'Liste de rappels invalide');
+      const source = `part:${sub}`;
+      const parts = this.sql
+        .exec<{ n: number }>("SELECT COUNT(DISTINCT source) AS n FROM queue WHERE device = ? AND source LIKE 'part:%' AND source != ?", arg, source)
+        .one().n;
+      if (items.length && parts >= MAX_PARTS) throw new HttpError(507, 'Trop de listes de rappels pour cet appareil');
+      this.sql.exec('DELETE FROM queue WHERE device = ? AND source = ?', arg, source);
+      this.checkQueueRoom(items.length);
+      for (const it of items) this.insertQueue({ ...it, device: arg }, source);
       await this.rescheduleAlarm();
       return Response.json({ ok: true, count: items.length });
     }

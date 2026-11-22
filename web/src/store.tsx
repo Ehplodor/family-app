@@ -10,22 +10,27 @@ import {
 } from 'react';
 import { Engine, type FamilySettings, type Member as MemberData } from './lib/engine';
 import { Notifier } from './lib/notify';
-import type { Doc } from './lib/replica';
+import type { Item } from './lib/vault';
+import type { CircleInfo } from './lib/vault';
 import type { SyncStatus } from './lib/sync';
 
-export type { Doc } from './lib/replica';
+/** Élément lisible : ses champs, son propriétaire et les cercles qui le voient. */
+export type Doc<T> = Item<T>;
 export type Member = { id: string; name: string; color: string; kind?: 'child' | 'adult' };
 export type Me = { member: Member; family: { name: string; settings: Omit<FamilySettings, 'name'> }; members: Member[] };
+export type { CircleInfo };
 
 /* ------------------------------------------------------------------ Contexte */
 
-type AppState = 'loading' | 'setup' | 'choose-member' | 'ready' | 'removed';
+type AppState = 'loading' | 'setup' | 'migrate' | 'choose-member' | 'ready' | 'removed';
 type Ctx = { engine: Engine | null; notifier: Notifier | null; state: AppState; error: string | null };
 const AppContext = createContext<Ctx>({ engine: null, notifier: null, state: 'loading', error: null });
 
 let booted: Promise<{ engine: Engine; notifier: Notifier }> | null = null;
 function boot() {
   booted ??= Engine.boot().then((engine) => {
+    // Pour les essais en développement uniquement (absent de l'appli publiée).
+    if (import.meta.env.DEV) (window as unknown as { __engine: Engine }).__engine = engine;
     const notifier = new Notifier(engine);
     engine.sync?.whenReady().then(() => {
       notifier.ensureSubscription().catch(() => {});
@@ -40,7 +45,8 @@ function computeState(e: Engine | null): AppState {
   if (!e) return 'loading';
   if (e.removed) return 'removed';
   if (!e.circle) return 'setup';
-  if (!e.memberId || !e.replica.get('members', e.memberId)) return 'choose-member';
+  if (!e.migrated) return 'migrate';
+  if (!e.memberId || !e.vault.get('members', e.memberId)) return 'choose-member';
   return 'ready';
 }
 
@@ -52,7 +58,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     boot()
       .then(({ engine, notifier }) => {
         const refresh = () => setCtx({ engine, notifier, state: computeState(engine), error: null });
-        unsub = [engine.subscribe(refresh), engine.replica.subscribe('members', refresh)];
+        unsub = [engine.subscribe(refresh), engine.vault.subscribe(refresh)];
         let lastCircle = engine.circle?.circleId;
         unsub.push(
           engine.subscribe(() => {
@@ -99,34 +105,42 @@ export function useSyncStatus(): SyncStatus {
 
 /* ------------------------------------------------------------------ Collections */
 
+/** `groups` : cercles qui voient l'élément (par défaut : le réglage de l'appareil). */
+type WithGroups = { groups?: string[] };
+
 export type Collection<T> = {
   docs: Doc<T>[];
   loaded: boolean;
-  create: (data: T) => Promise<Doc<T>>;
-  update: (id: string, patch: Partial<T>) => Promise<void>;
-  remove: (id: string) => Promise<void>;
+  create: (data: T & WithGroups) => Promise<Doc<T>>;
+  update: (id: string, patch: Partial<T> & WithGroups) => Promise<void>;
+  /** Supprime pour tout le monde (si on en est l'auteur), sinon seulement pour soi. */
+  remove: (id: string) => Promise<'all' | 'me'>;
+  /** Peut-on modifier ces champs de l'élément ? (sans champs : peut-on le supprimer pour tous ?) */
+  canEdit: (id: string, fields?: string[]) => boolean;
 };
 
 /**
- * Accès à une collection de la famille. Les données sont lues sur l'appareil
- * (instantané, même hors ligne) et les modifications sont synchronisées en arrière-plan.
+ * Accès à une collection. Les données sont lues sur l'appareil (instantané, même hors ligne), vérifiées par
+ * le coffre (signatures, droits), et les modifications sont synchronisées en arrière-plan.
  */
 export function useCollection<T extends object>(name: string): Collection<T> {
   const engine = useEngine();
-  const r = engine.replica;
+  const v = engine.vault;
+  const defaults = useDefaultGroups();
   const docs = useSyncExternalStore(
-    (cb) => r.subscribe(name, cb),
-    () => r.list<T>(name),
+    (cb) => v.subscribe(cb),
+    () => v.list<T>(name),
   );
   return useMemo(
     () => ({
       docs,
       loaded: true,
-      create: (data: T) => r.create<T>(name, data),
-      update: (id: string, patch: Partial<T>) => r.update<T>(name, id, patch),
-      remove: (id: string) => r.remove(name, id),
+      create: (data: T & WithGroups) => v.create<T>(name, data, { groups: data.groups?.length ? data.groups : defaults }),
+      update: (id: string, patch: Partial<T> & WithGroups) => v.update<T>(name, id, patch, patch.groups),
+      remove: (id: string) => v.remove(name, id),
+      canEdit: (id: string, fields?: string[]) => v.canEdit(name, id, fields, !fields),
     }),
-    [docs, r, name],
+    [docs, v, name, defaults],
   );
 }
 
@@ -135,18 +149,85 @@ export function useDoc<T extends object>(collection: string, id: string): Doc<T>
   return docs.find((d) => d.id === id);
 }
 
+/* ------------------------------------------------------------------ Cercles */
+
+/** Cercles lisibles par cet appareil (se met à jour à chaque vérification). */
+export function useCircles(): CircleInfo[] {
+  const engine = useEngine();
+  const v = engine.vault;
+  useSyncExternalStore((cb) => v.subscribe(cb), v.getVersion);
+  return v.circles();
+}
+
+/** Le coffre (pour les écrans qui gèrent les cercles). */
+export function useVault() {
+  const engine = useEngine();
+  const v = engine.vault;
+  useSyncExternalStore((cb) => v.subscribe(cb), v.getVersion);
+  return v;
+}
+
+/* ------------------------------------------------------------------ Cercles par défaut (réglage de l'appareil) */
+
+const DEFAULT_KEY = 'circles.default';
+const defaultListeners = new Set<() => void>();
+let defaultChoice: string[] = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(DEFAULT_KEY) ?? '[]');
+    return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+})();
+
+export function setDefaultCircles(ids: string[]) {
+  defaultChoice = ids;
+  try {
+    localStorage.setItem(DEFAULT_KEY, JSON.stringify(ids));
+  } catch {
+    /* stockage indisponible : réglage gardé en mémoire */
+  }
+  defaultListeners.forEach((l) => l());
+}
+
+/** Cercles où ranger un nouvel élément : le réglage de l'appareil, sinon le premier cercle partagé. */
+export function useDefaultGroups(): string[] {
+  const choice = useSyncExternalStore(
+    (l) => {
+      defaultListeners.add(l);
+      return () => defaultListeners.delete(l);
+    },
+    () => defaultChoice,
+  );
+  const circles = useCircles();
+  return useMemo(() => {
+    const ok = choice.filter((id) => circles.some((c) => c.id === id && c.writable));
+    if (ok.length) return ok;
+    const first = circles.find((c) => !c.personal && c.writable) ?? circles.find((c) => c.writable);
+    return first ? [first.id] : [];
+  }, [choice, circles]);
+}
+
 /* ------------------------------------------------------------------ Moi / la famille */
 
+/**
+ * Moi, les personnes de mes cercles, et les réglages communs. Un profil ne compte que s'il est écrit par la
+ * personne elle-même (ou, pour un enfant sans appareil, par celui qui l'a créé).
+ * Le « nom de la famille » affiché est celui du premier cercle partagé.
+ */
 export function useMe(): Me {
   const engine = useEngine();
   const members = useCollection<MemberData>('members').docs;
   const settings = useDoc<FamilySettings>('settings', 'family');
+  const circles = useCircles();
   return useMemo(() => {
     const list = members.map((m) => ({ id: m.id, name: m.name, color: m.color, kind: m.kind }));
     const member = list.find((m) => m.id === engine.memberId) ?? { id: engine.memberId ?? '', name: '?', color: '#999999' };
-    const { name = 'Ma famille', ...rest } = settings ?? ({} as Partial<FamilySettings>);
-    return { member, members: list, family: { name, settings: rest } };
-  }, [members, settings, engine.memberId]);
+    const { name: _old, ...rest } = settings ?? ({} as Partial<FamilySettings>);
+    void _old;
+    const shared = circles.find((c) => !c.personal);
+    return { member, members: list, family: { name: shared?.name ?? 'Ma famille', settings: rest } };
+  }, [members, settings, engine.memberId, circles]);
 }
 
 export function useMembers(): { members: Member[]; byId: (id: string | null | undefined) => Member | undefined } {
