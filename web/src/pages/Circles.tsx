@@ -229,7 +229,7 @@ function MasterkeyCard() {
           <KeyRound size={16} /> <b>Votre masterkey d'admin</b>. Rangez-la dans un gestionnaire de mots de passe (pas en photo,
           pas dans vos notes). Elle seule vous rendra votre rôle d'admin si vous changez de téléphone.
         </p>
-        <div className="safety" style={{ fontFamily: 'monospace', fontSize: 18, wordBreak: 'break-all' }}>
+        <div className="masterkey">
           {pending}
         </div>
         <button className="btn" onClick={() => navigator.clipboard?.writeText(pending)}>
@@ -258,7 +258,7 @@ function MasterkeyCard() {
       <div className="form">
         {due && <p className="small">Cela fait plus de 6 mois : vérifiez que vous retrouvez toujours votre masterkey.</p>}
         {shown ? (
-          <div className="safety" style={{ fontFamily: 'monospace', fontSize: 18, wordBreak: 'break-all' }}>
+          <div className="masterkey">
             {shown}
           </div>
         ) : (
@@ -485,7 +485,7 @@ function NewCircleForm({ onDone, onError }: { onDone: () => void; onError: (e: s
           {people.map((m) => {
             const on = members.includes(m);
             return (
-              <button key={m} type="button" className={`chip ${on ? 'on' : ''}`} onClick={() => setMembers(on ? members.filter((x) => x !== m) : [...members, m])}>
+              <button key={m} type="button" className={`chip ${on ? 'on plain-on' : ''}`} onClick={() => setMembers(on ? members.filter((x) => x !== m) : [...members, m])}>
                 {byId(m)?.name}
               </button>
             );

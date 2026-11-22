@@ -29,6 +29,8 @@ const AppContext = createContext<Ctx>({ engine: null, notifier: null, state: 'lo
 let booted: Promise<{ engine: Engine; notifier: Notifier }> | null = null;
 function boot() {
   booted ??= Engine.boot().then((engine) => {
+    // Pour les essais en développement uniquement (absent de l'appli publiée).
+    if (import.meta.env.DEV) (window as unknown as { __engine: Engine }).__engine = engine;
     const notifier = new Notifier(engine);
     engine.sync?.whenReady().then(() => {
       notifier.ensureSubscription().catch(() => {});

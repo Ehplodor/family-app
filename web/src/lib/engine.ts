@@ -397,6 +397,8 @@ export class Engine {
       await this.sync?.flush();
       await this.setCircle(secret, true);
       await this.startSync();
+      // Ce que cet appareil a déjà (ses clés publiques…) part aussi dans le nouvel espace.
+      this.sync!.pushRecords(this.replica.allRecords((r) => isV2(r.c) && r.c !== col('move'))).catch(() => {});
       this.emit();
     } catch (err) {
       console.warn('Changement d’espace impossible', err);

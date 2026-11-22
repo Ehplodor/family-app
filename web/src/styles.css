@@ -1633,3 +1633,18 @@ input.switch {
 .chat-tabs .chip {
   flex: none;
 }
+
+/* Choix simple (sans couleur propre) : la couleur de l'appli quand il est sélectionné. */
+.chip.on.plain-on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+/* Masterkey de l'admin : lisible, copiable, sur une ou deux lignes. */
+.masterkey {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 18px;
+  letter-spacing: 1px;
+  word-break: break-all;
+  user-select: all;
+  margin: 8px 0;
+}

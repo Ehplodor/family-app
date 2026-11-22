@@ -93,16 +93,16 @@ export function InvitePanel({ onDone }: { onDone: () => void }) {
           <p className="muted">Vérifiez que le nouvel appareil affiche exactement les mêmes émojis.</p>
         </div>
         <div className="chips">
-          <button type="button" className={`chip ${who === 'me' ? 'on' : ''}`} onClick={() => setWho('me')}>
+          <button type="button" className={`chip ${who === 'me' ? 'on plain-on' : ''}`} onClick={() => setWho('me')}>
             Un autre de mes appareils
           </button>
           {adminOf.length > 0 && (
-            <button type="button" className={`chip ${who === 'new' ? 'on' : ''}`} onClick={() => setWho('new')}>
+            <button type="button" className={`chip ${who === 'new' ? 'on plain-on' : ''}`} onClick={() => setWho('new')}>
               Une nouvelle personne
             </button>
           )}
           {people.map((m) => (
-            <button key={m} type="button" className={`chip ${who === m ? 'on' : ''}`} onClick={() => setWho(m)}>
+            <button key={m} type="button" className={`chip ${who === m ? 'on plain-on' : ''}`} onClick={() => setWho(m)}>
               Appareil de {byId(m)?.name ?? '?'}
             </button>
           ))}

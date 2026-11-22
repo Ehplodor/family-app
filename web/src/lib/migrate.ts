@@ -89,12 +89,14 @@ export async function startMigration(engine: Engine) {
   const info = oldInfo(r);
   await idb.put('kv', 'migration', { info, admin: true, old: engine.circle, done: false });
   await engine.adminKeys.get();
+  // Clés de cet appareil publiées dans l'ancien espace : les autres vérifient ainsi la signature du déménagement.
+  await engine.vault.publishDevice();
+  await engine.sync?.flush();
   await engine.moveSpace(
     info.devices.map((d) => ({ id: d.id, pub: d.pub })),
     {
       migration: true,
       beforeSwitch: async () => {
-        await engine.vault.publishDevice();
         const fam = await engine.vault.createCircle({ name: info.famName, color: '#8E5CE6' }, undefined, info.members);
         await idb.put('kv', 'migration', { info, admin: true, old: (await idb.get<{ old: StoredCircle }>('kv', 'migration'))!.old, fam, done: false });
       },
@@ -110,24 +112,32 @@ export async function rememberOldSpace(engine: Engine) {
 }
 
 let running = false;
+let again = false;
 /**
  * À chaque changement, une fois dans le nouvel espace : l'admin fait entrer les anciens appareils qui se
  * présentent ; chacun republie ses données dès qu'il peut écrire dans « Famille ».
  */
 export async function continueMigration(engine: Engine) {
   const m = await idb.get<{ info: OldInfo; admin: boolean; old: StoredCircle; fam?: string; done: boolean }>('kv', 'migration');
-  if (!m || !engine.migrated || running) return;
+  if (!m || !engine.migrated) return;
+  if (running) {
+    // Un appareil s'est peut-être présenté pendant ce tour : on refera un tour à la fin.
+    again = true;
+    return;
+  }
   running = true;
+  again = false;
   try {
     const v = engine.vault;
-    if (m.admin && m.fam) {
-      const fam = v.circle(m.fam);
+    const famId = m.fam ?? v.circles().find((c) => c.isAdmin && !c.personal)?.id;
+    if (m.admin && famId) {
+      const fam = v.circle(famId);
       if (fam?.isAdmin) {
-        const holders = v.holders(m.fam);
+        const holders = v.holders(famId);
         for (const [id, keys] of v.allDevices()) {
           if (holders.has(id) || id === engine.deviceId) continue;
           const old = m.info.devices.find((d) => jwkId(d.pub) === jwkId(keys.pub));
-          if (old) await v.admit(m.fam, old.member, id).catch((err) => console.warn('Migration : entrée', err));
+          if (old) await v.admit(famId, old.member, id).catch((err) => console.warn('Migration : entrée', err));
         }
       }
     }
@@ -147,9 +157,10 @@ export async function continueMigration(engine: Engine) {
       if (it.c === 'photos' && typeof data.blobId === 'string') data.blobId = await movePhoto(engine, m.old, data.blobId);
       await v.create(it.c, data, { id: it.id, t0: it.t0, groups: it.personal && personal ? [personal.id] : [fam.id] }).catch((err) => console.warn('Migration', it.c, err));
     }
-    await idb.put('kv', 'migration', { ...m, done: true });
+    await idb.put('kv', 'migration', { ...((await idb.get<typeof m>('kv', 'migration')) ?? m), done: true });
   } finally {
     running = false;
+    if (again) setTimeout(() => continueMigration(engine).catch((err) => console.warn('Migration', err)), 0);
   }
 }
 
