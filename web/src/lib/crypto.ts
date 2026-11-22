@@ -205,3 +205,112 @@ export async function newItemKey(): Promise<{ raw: Bytes; key: CryptoKey }> {
   return { raw, key: await importItemKey(raw) };
 }
 export const importItemKey = (raw: Bytes) => subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+
+/* ---------------------------------------------------------------- Signatures (ECDSA P-256) */
+
+/**
+ * JSON canonique : clés triées, pour que la même donnée donne toujours les mêmes octets à signer.
+ * `undefined` est ignoré (comme JSON.stringify).
+ */
+export function canonical(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map((v) => (v === undefined ? 'null' : canonical(v))).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
+}
+
+const ECDSA = { name: 'ECDSA', namedCurve: 'P-256' } as const;
+const ECDSA_SIGN = { name: 'ECDSA', hash: 'SHA-256' } as const;
+
+export type SigningKeys = { signKey: CryptoKey; signJwk: JsonWebKey };
+
+/** Clé de signature d'un appareil : la clé privée n'est pas exportable. */
+export async function newSigningKeys(extractable = false): Promise<SigningKeys & { pair: CryptoKeyPair }> {
+  const pair = (await subtle.generateKey(ECDSA, extractable, ['sign', 'verify'])) as CryptoKeyPair;
+  const jwk = await subtle.exportKey('jwk', pair.publicKey);
+  return { pair, signKey: pair.privateKey, signJwk: { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y } };
+}
+
+/** Signe une donnée (JSON canonique) pour un usage précis : une signature ne vaut que dans son contexte. */
+export async function sign(key: CryptoKey, context: string, value: unknown): Promise<string> {
+  const sig = await subtle.sign(ECDSA_SIGN, key, utf8.encode(`${context}\n${canonical(value)}`));
+  return b64url(new Uint8Array(sig));
+}
+
+const verifyKeys = new Map<string, Promise<CryptoKey | null>>();
+function importVerifyKey(jwk: JsonWebKey): Promise<CryptoKey | null> {
+  const id = `${jwk.x}.${jwk.y}`;
+  let k = verifyKeys.get(id);
+  if (!k) {
+    k = subtle.importKey('jwk', { kty: 'EC', crv: 'P-256', x: jwk.x, y: jwk.y }, ECDSA, false, ['verify']).catch(() => null);
+    verifyKeys.set(id, k);
+  }
+  return k;
+}
+
+export async function verify(jwk: JsonWebKey | undefined, context: string, value: unknown, sig: unknown): Promise<boolean> {
+  if (!jwk || typeof jwk.x !== 'string' || typeof jwk.y !== 'string' || typeof sig !== 'string') return false;
+  const key = await importVerifyKey(jwk);
+  if (!key) return false;
+  try {
+    return await subtle.verify(ECDSA_SIGN, key, fromB64url(sig), utf8.encode(`${context}\n${canonical(value)}`));
+  } catch {
+    return false;
+  }
+}
+
+/** Empreinte courte d'une clé publique (pour comparer et épingler). */
+export const jwkId = (jwk: JsonWebKey | undefined) => (jwk && typeof jwk.x === 'string' && typeof jwk.y === 'string' ? `${jwk.x}.${jwk.y}` : '');
+
+/* ---------------------------------------------------------------- Masterkey (clé d'administration) */
+
+/**
+ * La masterkey d'un administrateur : 20 octets aléatoires (160 bits), affichés en 8 groupes de 4 caractères
+ * (alphabet sans caractères ambigus). Elle chiffre la clé privée d'administration du cercle : impossible à
+ * deviner, elle permet de la récupérer sur un nouvel appareil.
+ */
+const MK_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+export function newMasterkey(): string {
+  const bytes = randomBytes(20);
+  let bits = 0;
+  let acc = 0;
+  let out = '';
+  for (const b of bytes) {
+    acc = (acc << 8) | b;
+    bits += 8;
+    while (bits >= 5) {
+      out += MK_ALPHABET[(acc >> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  return out.match(/.{4}/g)!.join('-');
+}
+/** Forme normalisée (majuscules, sans tirets ni espaces) ; null si ce n'est pas une masterkey. */
+export function normalizeMasterkey(text: string): string | null {
+  const s = text.toUpperCase().replace(/[\s-]/g, '');
+  return /^[A-HJ-NP-Z2-9]{32}$/.test(s) ? s : null;
+}
+
+async function masterkeyAes(masterkey: string, scope: string) {
+  const norm = normalizeMasterkey(masterkey);
+  if (!norm) throw new Error('Masterkey invalide');
+  return aesKeyFrom(utf8.encode(norm), `masterkey:${scope}`);
+}
+
+/** Chiffre la clé privée d'administration (exportée une seule fois, à sa création) avec la masterkey ; `scope` = le membre. */
+export async function wrapAdminKey(privateKey: CryptoKey, masterkey: string, scope: string): Promise<string> {
+  const pkcs8 = new Uint8Array(await subtle.exportKey('pkcs8', privateKey));
+  return seal(await masterkeyAes(masterkey, scope), pkcs8, `admin-key:${scope}`);
+}
+
+/** Récupère la clé d'administration avec la masterkey (clé importée non exportable) ; null si elle ne correspond pas. */
+export async function unwrapAdminKey(wrapped: string, masterkey: string, scope: string): Promise<CryptoKey | null> {
+  try {
+    const pkcs8 = await open(await masterkeyAes(masterkey, scope), wrapped, `admin-key:${scope}`);
+    return await subtle.importKey('pkcs8', pkcs8, ECDSA, false, ['sign']);
+  } catch {
+    return null;
+  }
+}
