@@ -81,7 +81,7 @@ export function MessagesPage({ params = [] }: { params?: string[] }) {
       {circles.length > 0 && (
         <div className="chips chat-tabs">
           <button type="button" className={`chip ${!circle ? 'on' : ''}`} onClick={() => navigate('/m/messages')}>
-            <Users size={14} /> Famille
+            <Users size={14} /> Toute la famille
           </button>
           {circles.map((g) => (
             <button

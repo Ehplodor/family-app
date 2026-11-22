@@ -101,7 +101,7 @@ export function CirclesSheet() {
   const engine = useEngine();
   const { member } = useMe();
   const visibility = useDefaultVisibility();
-  const [editing, setEditing] = useState<string | 'new' | null>(null);
+  const [editing, setEditing] = useState<string | 'new' | 'family' | null>(null);
   const [error, setError] = useState('');
   const [personal, setPersonal] = useState<'none' | 'ok' | 'offer' | 'waiting'>('ok');
   const list = groups.list();
@@ -121,8 +121,9 @@ export function CirclesSheet() {
   return (
     <div className="form">
       <p className="muted small">
-        Un évènement réservé à un ou plusieurs cercles est chiffré avec leur clé : les autres appareils de la famille ne
-        reçoivent qu'un paquet illisible (ni titre, ni date).
+        « Toute la famille » est le cercle de base : tous les appareils admis dans la famille y ont accès. Les autres
+        cercles sont des groupes plus petits à l'intérieur : ce qui leur est réservé est chiffré une seconde fois, avec leur
+        propre clé, et reste illisible pour le reste de la famille.
       </p>
       {personal === 'waiting' && (
         <p className="banner-info small">
@@ -140,6 +141,9 @@ export function CirclesSheet() {
         </p>
       ))}
       <ul className="cal-list">
+        <li>
+          <FamilyRow open={editing === 'family'} onToggle={() => setEditing(editing === 'family' ? null : 'family')} />
+        </li>
         {list.map((g) => (
           <li key={g.id}>
             <GroupRow
@@ -248,6 +252,49 @@ function Offers({ offers, onError }: { offers: GroupOffer[]; onError: (e: string
           </button>
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Le cercle de base : toute la famille (sa clé et ses appareils se gèrent dans Ma Famille et Sécurité). */
+function FamilyRow({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  const engine = useEngine();
+  const { members, byId } = useMembers();
+  const devices = engine.replica.list<{ memberId: string; label?: string; revoked?: boolean }>('devices').filter((d) => !d.revoked);
+  return (
+    <div className="stack">
+      <div className="toggle">
+        <i className="cal-swatch" style={{ background: 'var(--accent)' }} />
+        <span className="grow">
+          <Users size={14} /> Toute la famille
+        </span>
+        <span className="avatars">
+          {members.map((m) => (
+            <Avatar key={m.id} member={m} size={22} />
+          ))}
+        </span>
+        <button type="button" className="btn small" onClick={onToggle}>
+          {open ? 'Fermer' : 'Détails'}
+        </button>
+      </div>
+      {open && (
+        <div className="card form">
+          <div className="small">
+            <b>Appareils qui ont accès</b> (tous les appareils admis dans la famille) :
+            <ul>
+              {devices.map((d) => (
+                <li key={d.id}>
+                  {d.label || 'Appareil'} ({byId(d.memberId)?.name ?? '?'}){d.id === engine.deviceId ? ' – celui-ci' : ''}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <p className="muted small">
+            On entre dans ce cercle par une invitation (avec son code de vérification), et on en sort par <b>Sécurité → retirer
+            un appareil</b>. Les membres se gèrent dans <b>Ma Famille</b>.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
