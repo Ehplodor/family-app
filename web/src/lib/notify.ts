@@ -13,7 +13,7 @@ import type { Op } from './replica';
 import { DEFAULT_SNOOZE, PUSH_FOLLOW_UPS, ringsBetween, type Alarm } from './alarms';
 import { computeReminders, DEFAULT_PREFS, outOfQuietHours, type NotifPrefs, type ReminderData } from './reminders';
 import { RELAY_URL, relayFetch } from './sync';
-import { PRIVATE_EVENTS } from './groupManager';
+import { PRIVATE_EVENTS, PRIVATE_MESSAGES } from './groupManager';
 
 export type PushPayload = {
   title: string;
@@ -400,6 +400,16 @@ export class Notifier {
           payload: { title: isNew ? `📅 Nouvel événement` : '📅 Événement modifié', body: `${ev.title} · ${when} (par ${me})`, tag: `evchg-${op.i}`, url: '#/m/calendar', kind: 'calendar' },
           targets: this.targets((mid, p) => p.calendarChanges && (!ev.memberIds?.length || ev.memberIds.includes(mid))),
         }));
+      } else if (op.c === PRIVATE_MESSAGES && isNew && op.f?.box) {
+        // Message d'un cercle : seulement aux appareils autorisés des membres du cercle.
+        const msg = this.engine.groups.privateDocs<{ text: string }>(PRIVATE_MESSAGES).find((m) => m.id === op.i);
+        const g = msg && this.engine.groups.list().find((x) => x.id === msg.groups[0]);
+        if (!msg || !g) continue;
+        const authorized = new Set(this.engine.groups.holders(g.id).map((d) => d.id));
+        this.queueActivity(`pmsg-${op.i}`, () => ({
+          payload: { title: `${me} · 🔒 ${g.name}`, body: String(msg.text ?? '').slice(0, 200), tag: `messages-${g.id}`, url: `#/m/messages/${g.id}`, kind: 'message' },
+          targets: this.targets((mid, p) => p.messages && g.members.includes(mid)).filter((id) => authorized.has(id)),
+        }), true);
       } else if (op.c === PRIVATE_EVENTS && !op.d && op.f?.box) {
         // Évènement privé : on ne prévient que les membres de ses cercles (le contenu reste chiffré pour les autres).
         this.privateLocalChange = true;

@@ -27,7 +27,11 @@ import {
 import type { Doc, Replica } from './replica';
 
 export const PRIVATE_EVENTS = 'privateEvents';
-const SOURCES = new Set(['groups', 'groupKeys', PRIVATE_EVENTS, 'devices', 'members']);
+/** Messages d'une conversation réservée à un cercle (chiffrés comme les évènements privés). */
+export const PRIVATE_MESSAGES = 'privateMessages';
+const PRIVATE_COLLECTIONS = [PRIVATE_EVENTS, PRIVATE_MESSAGES];
+const SOURCES = new Set(['groups', 'groupKeys', ...PRIVATE_COLLECTIONS, 'devices', 'members']);
+const pkey = (collection: string, id: string) => `${collection}/${id}`;
 
 /** Accès de cet appareil à un cercle. */
 export type GroupAccess = 'ok' | 'outdated';
@@ -119,16 +123,19 @@ export class GroupManager {
       if (!meta || !latest) continue;
       groups.set(g.id, { ...meta, id: g.id, access: held.has(latest.key) ? 'ok' : 'outdated', keyEpoch: latest.epoch });
     }
-    // 3. Évènements privés lisibles (on ne redéchiffre que ce qui a changé).
+    // 3. Éléments privés lisibles : évènements, messages (on ne redéchiffre que ce qui a changé).
     const events = new Map<string, { box: unknown; data: PrivatePayload }>();
-    for (const doc of this.replica.list<PrivateDoc>(PRIVATE_EVENTS)) {
-      const cur = this.events.get(doc.id);
-      if (cur && cur.box === doc.box && this.held.size === held.size) {
-        events.set(doc.id, cur);
-        continue;
+    for (const col of PRIVATE_COLLECTIONS) {
+      for (const doc of this.replica.list<PrivateDoc>(col)) {
+        const k = pkey(col, doc.id);
+        const cur = this.events.get(k);
+        if (cur && cur.box === doc.box && this.held.size === held.size) {
+          events.set(k, cur);
+          continue;
+        }
+        const data = await openPrivate<PrivatePayload>(col, doc.id, doc.box, held);
+        if (data && Array.isArray(data.groups)) events.set(k, { box: doc.box, data });
       }
-      const data = await openPrivate<PrivatePayload>(PRIVATE_EVENTS, doc.id, doc.box, held);
-      if (data && Array.isArray(data.groups)) events.set(doc.id, { box: doc.box, data });
     }
     this.held = held;
     this.groups = groups;
@@ -152,11 +159,18 @@ export class GroupManager {
 
   /** Évènements privés lisibles, au format des documents de la réplique. */
   privateEvents<T>(): Doc<T & { groups: string[] }>[] {
-    return this.cached('events', () => {
+    return this.privateDocs<T>(PRIVATE_EVENTS);
+  }
+
+  /** Éléments privés lisibles d'une collection (dans l'ordre de création). */
+  privateDocs<T>(collection: string): Doc<T & { groups: string[] }>[] {
+    return this.cached(`docs:${collection}`, () => {
       const out: Doc<T & { groups: string[] }>[] = [];
-      for (const [id, { data }] of this.events) {
-        const base = this.replica.get<object>(PRIVATE_EVENTS, id);
-        if (!base) continue;
+      for (const doc of this.replica.list<object>(collection)) {
+        const base = doc;
+        const id = doc.id;
+        const data = this.events.get(pkey(collection, id))?.data;
+        if (!data) continue;
         const { groups, ...fields } = data;
         out.push({ ...(fields as T), groups, id, createdBy: base.createdBy, createdAt: base.createdAt, updatedAt: base.updatedAt } as Doc<T & { groups: string[] }>);
       }
@@ -268,7 +282,7 @@ export class GroupManager {
   /** Nombre d'évènements visibles par ce cercle. */
   usage(id: string): number {
     let n = 0;
-    for (const { data } of this.events.values()) if (data.groups.includes(id)) n++;
+    for (const [k, { data }] of this.events) if (k.startsWith(`${PRIVATE_EVENTS}/`) && data.groups.includes(id)) n++;
     return n;
   }
 
@@ -325,7 +339,7 @@ export class GroupManager {
 
   /** Cercles d'un évènement privé lisible ici (sinon null). */
   groupsOf(id: string): string[] | null {
-    return this.events.get(id)?.data.groups ?? null;
+    return this.events.get(pkey(PRIVATE_EVENTS, id))?.data.groups ?? null;
   }
 
   /**
@@ -334,6 +348,17 @@ export class GroupManager {
    * conserve alors son enveloppe et la clé de l'élément).
    */
   async saveEvent(id: string, data: object, groups: string[]) {
+    await this.savePrivate(PRIVATE_EVENTS, id, data, groups);
+  }
+
+  /** Envoie un message dans la conversation d'un cercle. */
+  async sendMessage(group: string, text: string) {
+    if (!this.currentKey(group)) throw new Error("Cet appareil n'a pas accès à ce cercle");
+    await this.savePrivate(PRIVATE_MESSAGES, randomId(), { text }, [group]);
+  }
+
+  /** Enregistre un élément chiffré pour des cercles (voir saveEvent). */
+  async savePrivate(collection: string, id: string, data: object, groups: string[]) {
     const unique = [...new Set(groups)].filter(isId);
     if (!unique.length) throw new Error('Choisissez au moins un cercle');
     const keys: HeldKey[] = [];
@@ -343,7 +368,7 @@ export class GroupManager {
       if (k) keys.push(k);
       else foreign.push(g);
     }
-    const previous = this.replica.get<PrivateDoc>(PRIVATE_EVENTS, id)?.box ?? undefined;
+    const previous = this.replica.get<PrivateDoc>(collection, id)?.box ?? undefined;
     const keep: Record<string, string> = {};
     if (foreign.length) {
       // On garde les enveloppes des cercles dont on n'a pas la clé (identifiées par leurs clés connues).
@@ -355,18 +380,18 @@ export class GroupManager {
       if (!Object.keys(keep).length) throw new Error("Cet appareil n'a pas accès à l'un des cercles choisis");
     }
     const payload: PrivatePayload = { ...(data as Record<string, unknown>), groups: unique };
-    const box = await sealPrivate(PRIVATE_EVENTS, id, payload, keys, { keep, previous: previous ?? undefined, held: this.held });
+    const box = await sealPrivate(collection, id, payload, keys, { keep, previous: previous ?? undefined, held: this.held });
     // Lisible immédiatement (rappels, notifications d'activité) sans attendre le déchiffrement.
-    this.events.set(id, { box, data: payload });
+    this.events.set(pkey(collection, id), { box, data: payload });
     this.cache.clear();
-    const exists = !!this.replica.get(PRIVATE_EVENTS, id);
-    if (exists) await this.replica.update<PrivateDoc>(PRIVATE_EVENTS, id, { box });
-    else await this.replica.create<PrivateDoc>(PRIVATE_EVENTS, { box }, id);
+    const exists = !!this.replica.get(collection, id);
+    if (exists) await this.replica.update<PrivateDoc>(collection, id, { box });
+    else await this.replica.create<PrivateDoc>(collection, { box }, id);
   }
 
   /** Supprime un évènement privé (le contenu chiffré est d'abord effacé des copies). */
   async removeEvent(id: string) {
-    this.events.delete(id);
+    this.events.delete(pkey(PRIVATE_EVENTS, id));
     this.cache.clear();
     await this.replica.erase(PRIVATE_EVENTS, id, { box: null });
   }

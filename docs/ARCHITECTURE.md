@@ -141,6 +141,10 @@ Clé à usage unique de l'évènement → chiffre l'évènement entier (titre, d
   relais garde donc, pour chaque appareil, une liste de rappels **à part par cercle restreint**
   (`PUT /c/<cercle>/part-schedule/<appareil>/<id aléatoire du cercle>`, au plus 16 listes par appareil), calculée
   uniquement par les appareils qui ont la clé du cercle. Le résumé du matin ne mentionne pas les évènements privés.
+- **Messages** : chaque cercle (sauf « Moi seul ») a sa conversation dans *Messages*, chiffrée de la même façon
+  (collection `privateMessages`, un message = un élément chiffré pour un seul cercle). Les notifications de ces
+  messages ne partent qu'aux appareils autorisés des membres du cercle. La conversation de toute la famille ne
+  change pas.
 - **Sauvegarde** : la sauvegarde chiffrée (phrase secrète) contient aussi les clés des cercles de l'appareil, pour
   que ses évènements privés restent lisibles après une restauration.
 - **Limites** : la fusion se fait par évènement entier (et non champ par champ) pour un évènement privé ; un membre

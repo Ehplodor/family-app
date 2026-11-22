@@ -11,7 +11,7 @@ vi.mock('./idb', () => ({
 import { newDeviceKeys, newSecret, deriveGroupKey } from './crypto';
 import { randomId } from './bytes';
 import { Replica, type Op } from './replica';
-import { GroupManager, PRIVATE_EVENTS } from './groupManager';
+import { GroupManager, PRIVATE_EVENTS, PRIVATE_MESSAGES } from './groupManager';
 import {
   latestKey,
   openPrivate,
@@ -190,6 +190,15 @@ describe('cercles : plusieurs appareils', () => {
     await sync();
     expect(titles(julie)).toEqual(['Cadeau de Léo']);
     expect(titles(leo)).toEqual([]);
+
+    // Conversation du cercle : lisible par Julie, pas par Léo.
+    await julie.groups.sendMessage(parents, 'On lui offre un vélo ?');
+    await sync();
+    const texts = (p: Phone) => p.groups.privateDocs<{ text: string }>(PRIVATE_MESSAGES).map((m) => m.text);
+    expect(texts(rod)).toEqual(['On lui offre un vélo ?']);
+    expect(texts(leo)).toEqual([]);
+    expect(JSON.stringify(leo.replica.allRecords())).not.toContain('vélo');
+    await expect(leo.groups.sendMessage(parents, 'intrus')).rejects.toThrow();
 
     // Julie modifie : elle n'a pas la clé de « Moi seul » de Rod, l'évènement reste visible par les deux cercles.
     await julie.groups.saveEvent(id, { title: 'Cadeau de Léo (vélo)' }, [parents, await personalGroupId('rod')]);

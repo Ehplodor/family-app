@@ -28,7 +28,7 @@ cercle familial **chiffrées de bout en bout**. Elle se publie sur **GitHub Page
 | Module | Ce qu'il fait |
 | --- | --- |
 | Listes | Listes partagées de quatre types : à cocher, **courses** (rangées par rayon), **simple** (à puces) et **projet** (colonnes à faire / en cours / fait, avec avancement). Ajout multiple (`lait, pain, œufs`), on voit qui a coché quoi |
-| Calendrier | Vue mois + agenda, événements récurrents ou sur plusieurs jours, attribués, avec un rappel réglable par événement. Plusieurs calendriers à cocher : famille, anniversaires, école, jours fériés, vacances scolaires (zone A, B ou C), et calendriers importés (fichier .ics, ou abonnement par adresse : Google, Outlook, iCloud, club de sport…). **Cercles** : un évènement peut être réservé à un ou plusieurs cercles (« Moi seul », « Parents »…) ; il est alors chiffré pour eux seuls, les autres appareils de la famille ne le voient pas |
+| Calendrier | Vue mois + agenda, événements récurrents ou sur plusieurs jours, attribués, avec un rappel réglable par événement. Plusieurs calendriers à cocher : famille, anniversaires, école, jours fériés, vacances scolaires (zone A, B ou C), et calendriers importés (fichier .ics, ou abonnement par adresse : Google, Outlook, iCloud, club de sport…). **Cercles** : un évènement peut être réservé à un ou plusieurs cercles (« Moi seul », « Parents »…) ; il est alors chiffré pour eux seuls, les autres appareils de la famille ne le voient pas. Chaque cercle (hors « Moi seul ») a aussi sa conversation chiffrée dans *Messages* |
 | Messages | Fil de discussion familial |
 | Ma Famille | Membres, invitations d'appareils |
 | Contacts | Numéros utiles, appel, e-mail et carte en un geste |

@@ -1625,3 +1625,11 @@ input.switch {
   margin-bottom: 14px;
   flex-wrap: wrap;
 }
+.chat-tabs {
+  padding: 0 0 8px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+.chat-tabs .chip {
+  flex: none;
+}
