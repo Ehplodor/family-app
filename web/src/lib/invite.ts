@@ -12,6 +12,7 @@ import { b64url, fromB64url, randomBytes, randomId } from './bytes';
 import { deriveInviteKeys, openFromDevice, openJSON, safetyCode, sealJSON, sealToDevice, type InviteKeys } from './crypto';
 import { deviceLabel, type Engine } from './engine';
 import { RELAY_URL } from './sync';
+import { deviceKeysOk } from './circles';
 
 /** `device` = empreinte des deux clés publiques (vérifiée par celui qui approuve). */
 export type JoinRequest = { label: string; pub: JsonWebKey; spub?: JsonWebKey; device?: string };
@@ -53,7 +54,19 @@ export async function createInvitation(): Promise<Invitation> {
 
 export const pollJoinRequest = (inv: Invitation) => getBox<JoinRequest>(inv.keys, 'request');
 
-export const requestSafetyCode = (secret: Bytes, pub: JsonWebKey) => safetyCode('invite', secret, pubId(pub));
+/**
+ * Code de 5 émojis comparé sur les deux écrans. Il couvre l'identifiant de l'appareil, c'est-à-dire l'empreinte de
+ * ses DEUX clés publiques (chiffrement et signature) : quelqu'un qui aurait le lien d'invitation ne peut pas glisser
+ * sa propre clé de signature à côté de la clé de chiffrement du vrai appareil sans changer le code.
+ */
+const deviceCode = (secret: Bytes, device: string) => safetyCode('invite-device', secret, device);
+
+/** Côté appareil qui approuve : code de la demande (identifiant vérifié contre les deux clés reçues). */
+export async function requestSafetyCode(secret: Bytes, req: JoinRequest): Promise<string> {
+  if (req.device && req.spub && (await deviceKeysOk(req.device, { pub: req.pub, spub: req.spub }))) return deviceCode(secret, req.device);
+  // Demande incomplète ou incohérente : ancien code (l'approbation sera de toute façon refusée).
+  return safetyCode('invite', secret, pubId(req.pub));
+}
 
 /**
  * Approuve une demande. `who` : 'me' (un autre de mes appareils), ou les cercles où faire entrer une nouvelle
@@ -87,7 +100,7 @@ export async function sendJoinRequest(engine: Engine, secret: Bytes) {
   const keys = await deriveInviteKeys(secret);
   const id = engine.identity;
   await postBox(keys, 'request', { label: deviceLabel(), pub: id.publicJwk, spub: id.signJwk, device: id.deviceId } satisfies JoinRequest);
-  return { keys, code: await safetyCode('invite', secret, pubId(engine.identity.publicJwk)) };
+  return { keys, code: await deviceCode(secret, id.deviceId) };
 }
 
 /** Attend l'approbation ; renvoie le secret de l'espace et le membre, ou null si pas encore approuvé. */

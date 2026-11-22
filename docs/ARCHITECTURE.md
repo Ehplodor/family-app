@@ -132,7 +132,8 @@ lire un cercle où il n'a pas été admis.
 1. *Cercles → Inviter* affiche un **secret d'invitation à usage unique, valable 15 minutes** (QR code ou lien). Il ne
    contient aucune clé.
 2. Le nouvel appareil envoie une demande chiffrée avec ses clés publiques ; **les deux écrans affichent un code de
-   5 émojis** à comparer.
+   5 émojis** à comparer. Le code est tiré de l'identifiant de l'appareil (empreinte de ses deux clés publiques,
+   chiffrement et signature) : quelqu'un qui aurait le lien ne peut remplacer aucune des deux sans changer le code.
 3. Celui qui invite choisit : « un autre de mes appareils » (n'importe quel membre), ou « une nouvelle personne » /
    « l'appareil de … » avec les cercles où la faire entrer (admin seulement). Les clés de ces cercles sont remises à
    l'appareil, **toutes époques comprises** (il lit aussi ce qui a été écrit avant son arrivée), puis le secret de
