@@ -1,12 +1,74 @@
-import { useState } from 'react';
-import { ArrowDown, ArrowUp } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { ArrowDown, ArrowUp, Check } from 'lucide-react';
 import type { FamilySettings } from '../lib/engine';
-import { useEngine, useMe } from '../store';
+import { useEngine, useLocalState, useMe } from '../store';
+import {
+  applyDisplayPrefs,
+  loadPrefs,
+  TEXT_SIZE_KEY,
+  TEXT_SIZES,
+  THEME_KEY,
+  THEMES,
+  type TextSize,
+  type ThemeId,
+} from '../lib/theme';
 import { DEFAULT_HOME, MODULES } from '../modules';
 import { ColorPicker, Field, FieldGroup, IconBadge, Page } from '../ui';
 import { MemberForm } from './Family';
 
 export const DEFAULT_ACCENT = '#8E5CE6';
+
+/** Thème et taille du texte : réglages de cet appareil uniquement (stockage local, non partagés). */
+function DisplaySettings() {
+  const initial = loadPrefs();
+  const [theme, setTheme] = useLocalState<ThemeId>(THEME_KEY, initial.theme);
+  const [textSize, setTextSize] = useLocalState<TextSize>(TEXT_SIZE_KEY, initial.textSize);
+  useEffect(() => applyDisplayPrefs({ theme, textSize }), [theme, textSize]);
+  return (
+    <>
+      <h3 className="apps-title">Affichage</h3>
+      <p className="muted">Propre à cet appareil : chacun choisit ce qui convient à ses yeux.</p>
+      <div className="theme-grid" role="radiogroup" aria-label="Thème">
+        {THEMES.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="radio"
+            aria-checked={theme === t.id}
+            className={`theme-card ${theme === t.id ? 'on' : ''}`}
+            onClick={() => setTheme(t.id)}
+          >
+            <span className="theme-preview" style={{ background: t.preview.bg }} aria-hidden="true">
+              <span className="theme-preview-card" style={{ background: t.preview.surface }}>
+                <i style={{ background: t.preview.text }} />
+                <i style={{ background: t.preview.text, width: '55%', opacity: 0.6 }} />
+                <b style={{ background: t.preview.accent ?? 'var(--accent)' }} />
+              </span>
+              {theme === t.id && (
+                <span className="theme-check">
+                  <Check size={14} strokeWidth={3} />
+                </span>
+              )}
+            </span>
+            <strong>{t.name}</strong>
+            <small>{t.description}</small>
+          </button>
+        ))}
+      </div>
+      <div className="card form">
+        <FieldGroup label="Taille du texte">
+          <div className="size-picker">
+            {TEXT_SIZES.map((s) => (
+              <button key={s.id} type="button" className={textSize === s.id ? 'on' : ''} aria-pressed={textSize === s.id} onClick={() => setTextSize(s.id)}>
+                <span style={{ fontSize: 14 * s.scale }}>{s.name}</span>
+              </button>
+            ))}
+          </div>
+        </FieldGroup>
+      </div>
+    </>
+  );
+}
 
 export function SettingsPage() {
   const me = useMe();
@@ -48,6 +110,8 @@ export function SettingsPage() {
           <ColorPicker value={settings.accent ?? DEFAULT_ACCENT} onChange={(accent) => save({ settings: { accent } })} />
         </FieldGroup>
       </div>
+
+      <DisplaySettings />
 
       <h3 className="apps-title">Accueil</h3>
       <p className="muted">Cochez les modules à afficher sur l'accueil et réglez leur ordre. Tous restent accessibles depuis l'onglet Applications.</p>

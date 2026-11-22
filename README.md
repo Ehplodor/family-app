@@ -52,7 +52,7 @@ Application familiale **local-first** (PWA) : les données vivent sur vos télé
 | **Réveils** | Propres à chaque appareil (transférables, jamais partagés), répétition d'un toucher, glisser pour arrêter, défis (calcul, mots à recopier), réveil en douceur, mode chevet. Appli fermée : notification + 2 relances (pas de sonnerie continue, voir l'architecture) |
 | Rappels | Notifications de l'appareil, préférences par membre, heures calmes, aperçu des prochains rappels |
 | Sécurité | Appareils, renouvellement des clés, sauvegarde, effacement |
-| Personnaliser | Tuiles de l'accueil, ordre, couleur, nom de la famille |
+| Personnaliser | Tuiles de l'accueil, ordre, couleur, nom de la famille ; thème d'affichage (Jour, Nuit, Papier, Vision nocturne, Développeur, Accessibilité, Automatique) et taille du texte, propres à chaque appareil |
 
 ## Mise à jour vers les cercles signés (familles existantes)
 
@@ -244,7 +244,7 @@ docs/              architecture et sécurité
 
 ## La mettre à votre goût
 
-- **Sans code** : *Applications → À votre goût* (modules de l'accueil, ordre, couleur).
+- **Sans code** : *Applications → À votre goût* (modules de l'accueil, ordre, couleur, thème et taille du texte de l'appareil).
 - **Apparence** : variables CSS en haut de `web/src/styles.css`.
 - **Ajouter un module** : les données sont des documents génériques, synchronisés et chiffrés automatiquement.
   **Ni le relais ni la synchronisation n'ont besoin d'être modifiés.**

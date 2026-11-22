@@ -3,8 +3,11 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import './styles.css';
 import { captureInstallPrompt } from './lib/install';
+import { initDisplayPrefs } from './lib/theme';
 
 captureInstallPrompt();
+// Thème de l'appareil appliqué avant le premier affichage (pas de « flash » de la mauvaise couleur).
+initDisplayPrefs();
 
 // Anti-« clickjacking » : l'appli refuse de s'afficher à l'intérieur d'un autre site (cadre invisible
 // pour faire cliquer « Approuver » à l'insu de l'utilisateur). GitHub Pages ne permet pas d'envoyer
