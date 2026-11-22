@@ -5,13 +5,14 @@
  *  - si l'admin a tout perdu, les autres membres peuvent organiser une relève (majorité + 7 jours).
  */
 import { useEffect, useState } from 'react';
-import { Crown, KeyRound, Lock, ShieldAlert, Smartphone, Users } from 'lucide-react';
+import { Crown, KeyRound, Laptop, Lock, ShieldAlert, Smartphone, Tablet, Users } from 'lucide-react';
 import { useCircles, useEngine, useMe, useMembers, useNotifier, useVault, setDefaultCircles, useDefaultGroups, type CircleInfo } from '../store';
 import { Avatar, ColorPicker, Field, FieldGroup, Page, PALETTE } from '../ui';
 import { jwkId } from '../lib/crypto';
 import { RELIEF_DELAY } from '../lib/circles';
 import { LocalAdminKeyring } from '../lib/adminKey';
 import type { Device, Member } from '../lib/engine';
+import { DEVICE_KIND_LABEL, deviceKindOf } from '../lib/deviceKind';
 
 export { useDefaultGroups };
 
@@ -534,27 +535,35 @@ function DevicesSection({ onError }: { onError: (e: string) => void }) {
   return (
     <FieldGroup label="Appareils">
       <ul className="plain">
-        {devices.map((d) => (
-          <li key={d.id} className="row" style={{ alignItems: 'center', gap: 8 }}>
-            <Smartphone size={18} />
-            <span className="grow">
-              {info(d.id)?.label ?? 'Appareil'} · {byId(d.member)?.name ?? '?'}
-              {d.id === engine.deviceId && <small className="muted"> (celui-ci)</small>}
-              {d.lost && <small className="error"> · déclaré perdu</small>}
-            </span>
-            {d.id !== engine.deviceId && canDeclare(d.member) && (
-              <button
-                className={`link ${d.lost ? '' : 'danger'}`}
-                onClick={() => {
-                  if (!d.lost && !confirm("Déclarer cet appareil perdu ? Il ne recevra plus rien de nouveau, et ce qu'il écrirait désormais sera ignoré. Vous pourrez lui rendre l'accès s'il est retrouvé.")) return;
-                  run(onError, () => vault.declareLost(d.id, !d.lost));
-                }}
-              >
-                {d.lost ? "Retrouvé : rendre l'accès" : 'Déclarer perdu'}
-              </button>
-            )}
-          </li>
-        ))}
+        {devices.map((d) => {
+          const kind = deviceKindOf(info(d.id));
+          const Icon = kind === 'computer' ? Laptop : kind === 'tablet' ? Tablet : Smartphone;
+          return (
+            <li key={d.id} className="device-row">
+              <Icon size={20} className="device-icon" aria-label={kind ? DEVICE_KIND_LABEL[kind] : 'Appareil'} />
+              <span className="grow">
+                <b>{byId(d.member)?.name ?? '?'}</b>
+                {d.id === engine.deviceId && <small className="muted"> (celui-ci)</small>}
+                <small className="muted device-label">
+                  {kind ? `${DEVICE_KIND_LABEL[kind]} · ` : ''}
+                  {info(d.id)?.label ?? 'Appareil'}
+                  {d.lost && <span className="error"> · déclaré perdu</span>}
+                </small>
+              </span>
+              {d.id !== engine.deviceId && canDeclare(d.member) && (
+                <button
+                  className={`link ${d.lost ? '' : 'danger'}`}
+                  onClick={() => {
+                    if (!d.lost && !confirm("Déclarer cet appareil perdu ? Il ne recevra plus rien de nouveau, et ce qu'il écrirait désormais sera ignoré. Vous pourrez lui rendre l'accès s'il est retrouvé.")) return;
+                    run(onError, () => vault.declareLost(d.id, !d.lost));
+                  }}
+                >
+                  {d.lost ? "Retrouvé : rendre l'accès" : 'Déclarer perdu'}
+                </button>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </FieldGroup>
   );

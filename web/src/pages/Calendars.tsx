@@ -1,10 +1,12 @@
 /**
  * Choix des calendriers affichés dans l'agenda (réglage propre à chaque appareil)
- * et gestion des calendriers importés (.ics), partagés avec la famille.
+ * (un calque par cercle, plus les calendriers intégrés et importés) et gestion des calendriers importés (.ics),
+ * partagés avec les cercles choisis.
  */
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { RefreshCw, Trash2 } from 'lucide-react';
-import { useCollection, useEngine } from '../store';
+import { Lock, Users } from 'lucide-react';
+import { useCircles, useCollection, useDefaultGroups, useEngine } from '../store';
 import { ColorPicker, Field, PALETTE, confirmDelete } from '../ui';
 import { normalizeIcsUrl, parseIcs, SCHOOL_DATA_UNTIL, type ImportedCalendar, type Zone } from '../lib/calendars';
 import { RELAY_URL } from '../lib/sync';
@@ -48,6 +50,18 @@ export function useCalendarPrefs(): CalendarPrefs {
 }
 
 export const isShown = (p: CalendarPrefs, id: string) => !p.hidden.includes(id);
+
+/** Calque d'un cercle : ses événements sont affichés sauf si l'utilisateur l'a décoché sur cet appareil. */
+export const circleLayer = (circleId: string) => `cercle:${circleId}`;
+
+/**
+ * Un événement est affiché si au moins un des cercles qui le voient est coché. Un événement sans cercle connu
+ * de cet appareil (cas improbable) reste affiché : mieux vaut trop montrer que perdre un rendez-vous.
+ */
+export function eventShown(p: CalendarPrefs, groups: string[] | undefined, known: (id: string) => boolean): boolean {
+  const mine = (groups ?? []).filter(known);
+  return !mine.length || mine.some((g) => isShown(p, circleLayer(g)));
+}
 const toggleShown = (p: CalendarPrefs, id: string) =>
   setCalendarPrefs({ hidden: isShown(p, id) ? [...p.hidden, id] : p.hidden.filter((h) => h !== id) });
 
@@ -101,8 +115,9 @@ async function refresh(
 
 /* ------------------------------------------------------------------ Écran « Calendriers » */
 
+// L'ancien calque « Calendrier de la famille » (id 'main') regroupait tous les événements : il est remplacé par un
+// calque par cercle. Une ancienne préférence 'main' est simplement ignorée.
 const BUILT_IN = [
-  { id: 'main', name: 'Calendrier de la famille', color: 'var(--accent)' },
   { id: 'birthdays', name: 'Anniversaires', color: '#F2784B' },
   { id: 'school', name: 'École (contrôles, exposés…)', color: '#E5484D' },
   { id: 'holidays', name: 'Jours fériés (France)', color: HOLIDAY_COLOR },
@@ -112,6 +127,9 @@ export function CalendarsSheet() {
   const p = useCalendarPrefs();
   const engine = useEngine();
   const cals = useCollection<ImportedCalendar>('calendars');
+  const circles = [...useCircles()].sort((a, b) => (a.personal ? -1 : 0) - (b.personal ? -1 : 0));
+  const defaults = useDefaultGroups();
+  const sharedWith = circles.filter((c) => defaults.includes(c.id)).map((c) => (c.personal ? 'Moi seul' : c.name));
   const [adding, setAdding] = useState<'url' | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -132,6 +150,17 @@ export function CalendarsSheet() {
     <div className="form">
       <p className="muted small">Cochez les calendriers à afficher sur cet appareil.</p>
       <ul className="cal-list">
+        {circles.map((c) => (
+          <li key={c.id}>
+            <label className="toggle">
+              <input type="checkbox" checked={isShown(p, circleLayer(c.id))} onChange={() => toggleShown(p, circleLayer(c.id))} />
+              <i className="cal-swatch" style={{ background: c.color }} />
+              <span className="grow">
+                {c.personal ? <Lock size={14} /> : <Users size={14} />} {c.personal ? 'Moi seul' : c.name}
+              </span>
+            </label>
+          </li>
+        ))}
         {BUILT_IN.map((c) => (
           <li key={c.id}>
             <label className="toggle">
@@ -185,7 +214,7 @@ export function CalendarsSheet() {
                 onSave={(patch) => cals.update(c.id, patch)}
                 onRefresh={() => refresh(engine.circle, c, cals.update)}
                 onDelete={() => {
-                  if (confirmDelete(`le calendrier « ${c.name} » (pour toute la famille)`)) {
+                  if (confirmDelete(`le calendrier « ${c.name} » (pour tous ceux qui le voient)`)) {
                     cals.remove(c.id);
                     setEditing(null);
                   }
@@ -200,7 +229,10 @@ export function CalendarsSheet() {
       )}
 
       <h3>Ajouter un calendrier</h3>
-      <p className="muted small">Un calendrier ajouté est partagé avec toute la famille (chiffré, comme le reste).</p>
+      <p className="muted small">
+        Un calendrier ajouté est visible par {sharedWith.length > 1 ? 'les cercles' : 'le cercle'} {sharedWith.join(', ') || '—'}, comme
+        vos nouveaux éléments (chiffré, comme le reste).
+      </p>
       <input
         ref={fileInput}
         type="file"

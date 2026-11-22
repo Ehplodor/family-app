@@ -6,6 +6,7 @@
  *  - Le COFFRE (vault.ts) range chaque donnée dans un ou plusieurs cercles, vérifie signatures et droits.
  */
 import * as idb from './idb';
+import { detectDeviceKind, type DeviceKind } from './deviceKind';
 import { b64url, fromB64url, fromUtf8, randomId, utf8 } from './bytes';
 import {
   deriveCircleKeys,
@@ -38,10 +39,19 @@ export type StoredCircle = CircleKeys & { secret: Uint8Array };
 /** Profil d'un membre (élément du membre, visible par tous ses cercles). */
 export type Member = { name: string; color: string; kind?: 'child' | 'adult'; admin?: { spub: JsonWebKey; wrapped: string } };
 /** Informations d'un appareil (élément de son membre) : nom affiché, notifications activées. */
-export type Device = { memberId: string; label: string; push?: boolean; revoked?: boolean };
+export type Device = {
+  memberId: string;
+  label: string;
+  push?: boolean;
+  revoked?: boolean;
+  /** Ordinateur, téléphone ou tablette (facultatif : absent chez les appareils inscrits avant ce champ). */
+  kind?: DeviceKind;
+};
 export type FamilySettings = { name: string; accent?: string; homeModules?: string[] };
 /** Déménagement vers un nouvel espace : nouveau secret chiffré pour chaque appareil gardé. */
 export type Move = { from: string; env: Record<string, string>; migration?: 1 };
+
+const thisDeviceKind = () => detectDeviceKind(navigator.userAgent, navigator.maxTouchPoints ?? 0);
 
 export function deviceLabel(): string {
   const ua = navigator.userAgent;
@@ -208,11 +218,12 @@ export class Engine {
   }
 
   async registerDevice(label = deviceLabel()) {
+    const kind = thisDeviceKind();
     if (!this.memberId) return;
     const groups = this.memberCircles();
     if (!groups.length) return;
     const cur = this.vault.get<Device>('deviceInfo', this.deviceId);
-    if (!cur) await this.vault.create<Device>('deviceInfo', { memberId: this.memberId, label }, { id: this.deviceId, groups });
+    if (!cur) await this.vault.create<Device>('deviceInfo', { memberId: this.memberId, label, kind }, { id: this.deviceId, groups });
   }
 
   /** Cercle personnel (« Moi seul ») : créé au besoin, une fois les données reçues. */
@@ -241,6 +252,8 @@ export class Engine {
       const dev = this.vault.get<Device>('deviceInfo', this.deviceId);
       if (!dev) await this.registerDevice();
       else if (!sameSet(dev.groups, mine)) await this.vault.update('deviceInfo', this.deviceId, {}, mine);
+      // Appareil inscrit avant le champ « kind » : complété une fois (les anciennes versions l'ignorent).
+      else if (!dev.kind && dev.owner === this.memberId) await this.vault.update<Device>('deviceInfo', this.deviceId, { kind: thisDeviceKind() });
     } catch (err) {
       console.warn('Profil', err);
     } finally {
