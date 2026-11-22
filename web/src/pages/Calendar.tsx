@@ -9,7 +9,7 @@ import type { Birthday } from './Birthdays';
 import { occursOn, spanEnd, spanPart, timeLabel, type Repeat } from '../lib/recurrence';
 import { KIND_EMOJI, KIND_LABEL, type Homework } from '../lib/school';
 import { holidayOn, icsEventsOn, icsTime, schoolHolidayOn, type ImportedCalendar } from '../lib/calendars';
-import { CalendarsSheet, HOLIDAY_COLOR, isShown, useCalendarPrefs, useRefreshSubscriptions, VACATION_COLOR } from './Calendars';
+import { CalendarsSheet, eventShown, HOLIDAY_COLOR, isShown, useCalendarPrefs, useRefreshSubscriptions, VACATION_COLOR } from './Calendars';
 import { visibleFor } from '../lib/calendarSearch';
 import { CalendarSearch } from './CalendarSearch';
 
@@ -69,6 +69,7 @@ export function useDayAgenda() {
   const prefs = useCalendarPrefs();
   const { byId } = useMembers();
   const main = useMainCircle();
+  const circles = useCircles();
   return useMemo(
     () =>
       (iso: string): Occurrence[] => {
@@ -82,8 +83,9 @@ export function useDayAgenda() {
             members: [],
             birthday: true,
           }));
+        const known = (id: string) => circles.some((c) => c.id === id);
         const evs: Occurrence[] = events
-          .filter((e) => occursOn(e, iso))
+          .filter((e) => occursOn(e, iso) && eventShown(prefs, e.groups, known))
           .map((e) => ({ e, time: timeLabel(e, iso), part: spanPart(e, iso) }))
           // Journées entières (et jours pleins d'un séjour) d'abord, puis par heure.
           .sort((a, b) => (!a.time === !b.time ? (a.time ?? '').localeCompare(b.time ?? '') : !a.time ? -1 : 1))
@@ -132,10 +134,10 @@ export function useDayAgenda() {
           ...extra,
           ...(isShown(prefs, 'birthdays') ? bdays : []),
           ...(isShown(prefs, 'school') ? school : []),
-          ...(isShown(prefs, 'main') ? evs : []),
+          ...evs,
         ];
       },
-    [events, birthdays, homework, imported, prefs, byId, main],
+    [events, birthdays, homework, imported, prefs, byId, main, circles],
   );
 }
 
@@ -174,6 +176,8 @@ export function CalendarPage() {
   const familyEvents = useCollection<CalEvent>('events');
   const allEvents = useCollection<CalEvent>('events').docs;
   const [circles, setCircles] = useState(false);
+  const myCircles = useCircles();
+  const prefs = useCalendarPrefs();
   const fullAgenda = useDayAgenda();
   const { members } = useMembers();
   // Filtre par personne (vide = tout le monde) et recherche : propres à cet écran, non partagés.
@@ -199,7 +203,9 @@ export function CalendarPage() {
   const lanes = useMemo(() => {
     const from = toISODate(visible[0]);
     const to = toISODate(visible[visible.length - 1]);
+    const known = (id: string) => myCircles.some((c) => c.id === id);
     const spans = allEvents
+      .filter((e) => eventShown(prefs, e.groups, known))
       .map((e) => ({ e, end: spanEnd(e) }))
       .filter((x): x is { e: Doc<CalEvent>; end: string } => !!x.end && x.e.date <= to && x.end >= from)
       .sort((a, b) => a.e.date.localeCompare(b.e.date) || b.end.localeCompare(a.end));
@@ -212,7 +218,7 @@ export function CalendarPage() {
       out.push({ ...x, lane });
     }
     return out;
-  }, [allEvents, visible[0].getTime(), visible.length]);
+  }, [allEvents, prefs, myCircles, visible[0].getTime(), visible.length]);
 
   /** Enregistre un évènement (ses cercles sont portés par l'élément, chiffré pour chacun). */
   const save = async (editing: Doc<CalEvent> | 'new', ev: CalEvent, target: string[]) => {

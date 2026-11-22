@@ -1648,3 +1648,25 @@ input.switch {
   user-select: all;
   margin: 8px 0;
 }
+
+/* Liste des appareils (écran Cercles) : icône, nom et type sur deux lignes, action à droite. */
+.device-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+.device-row + .device-row {
+  border-top: 1px solid var(--border);
+}
+.device-icon {
+  flex: none;
+  color: var(--muted);
+}
+.device-label {
+  display: block;
+}
+.device-row .link {
+  flex: none;
+  white-space: nowrap;
+}
