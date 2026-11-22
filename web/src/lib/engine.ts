@@ -262,6 +262,8 @@ export class Engine {
   }
 
   private afterVaultChange() {
+    // Un déménagement peut devenir valable une fois les autorisations de son auteur connues.
+    this.checkMove(false);
     if (!this.migrated) return;
     continueMigration(this)
       .catch((err) => console.warn('Migration', err))
@@ -385,40 +387,50 @@ export class Engine {
   }
 
   private moving = false;
-  private async checkMove() {
+  /** `fresh` : recalculer d'abord le coffre (une déclaration de perte arrivée en même temps doit compter). */
+  private async checkMove(fresh = true) {
     if (!this.circle || this.moving) return;
-    const current = this.circle.circleId;
-    const rec = this.replica.allRecords((r) => r.c === col('move') && r.id === current)[0];
-    const s = rec?.f.s?.v as Signed<Move> | undefined;
-    if (!s || !isSigned(s) || s.by === this.deviceId || s.p?.from !== current) return;
-    // Déménagement ordinaire : décidé par un appareil d'un membre de nos cercles. Migration : tout appareil
-    // de l'ancien format (même confiance qu'avant), une seule fois.
-    if (!(await this.vault.checkSigned('move', current, s))) return;
-    if (!s.p.migration && !this.vault.memberOf(s.by)) return;
-    if (s.p.migration && this.migrated) return;
+    // Pris dès le début : les vérifications attendent, un second appel ne doit pas déménager en même temps.
     this.moving = true;
     try {
-      const env = s.p.env?.[this.deviceId] ?? (s.p.migration && this.oldDeviceId ? s.p.env?.[this.oldDeviceId] : undefined);
-      if (!env) {
-        this.removed = true;
-        await idb.put('kv', 'removed', true);
-        this.sync?.stop();
-        this.emit();
-        return;
-      }
-      const secret = await openFromDevice(this.identity.privateKey, env, `move:${current}`);
-      if (s.p.migration) await rememberOldSpace(this);
-      await this.sync?.flush();
-      await this.setCircle(secret, true);
-      await this.startSync();
-      // Ce que cet appareil a déjà (ses clés publiques…) part aussi dans le nouvel espace.
-      this.sync!.pushRecords(this.replica.allRecords((r) => isV2(r.c) && r.c !== col('move'))).catch(() => {});
-      this.emit();
+      await this.applyMove(this.circle.circleId, fresh);
     } catch (err) {
       console.warn('Changement d’espace impossible', err);
     } finally {
       this.moving = false;
     }
+  }
+
+  private async applyMove(current: string, fresh: boolean) {
+    const rec = this.replica.allRecords((r) => r.c === col('move') && r.id === current)[0];
+    const s = rec?.f.s?.v as Signed<Move> | undefined;
+    if (!s || !isSigned(s) || s.by === this.deviceId || s.p?.from !== current) return;
+    // Déménagement ordinaire : décidé par un appareil autorisé AUJOURD'HUI dans un de nos cercles (ni perdu,
+    // ni d'un membre exclu : sinon un téléphone volé ramènerait tout le monde dans un espace qu'il connaît,
+    // juste après qu'on l'a coupé du relais). Migration : tout appareil de l'ancien format (même confiance
+    // qu'avant), une seule fois.
+    if (!(await this.vault.checkSigned('move', current, s))) return;
+    if (s.p.migration && this.migrated) return;
+    if (!s.p.migration) {
+      if (fresh) await this.vault.refresh();
+      if (!this.vault.isActive(s.by)) return;
+    }
+    const env = s.p.env?.[this.deviceId] ?? (s.p.migration && this.oldDeviceId ? s.p.env?.[this.oldDeviceId] : undefined);
+    if (!env) {
+      this.removed = true;
+      await idb.put('kv', 'removed', true);
+      this.sync?.stop();
+      this.emit();
+      return;
+    }
+    const secret = await openFromDevice(this.identity.privateKey, env, `move:${current}`);
+    if (s.p.migration) await rememberOldSpace(this);
+    await this.sync?.flush();
+    await this.setCircle(secret, true);
+    await this.startSync();
+    // Ce que cet appareil a déjà (ses clés publiques…) part aussi dans le nouvel espace.
+    this.sync!.pushRecords(this.replica.allRecords((r) => isV2(r.c) && r.c !== col('move'))).catch(() => {});
+    this.emit();
   }
 
   /* ------------------------------------------------------------ sauvegardes */

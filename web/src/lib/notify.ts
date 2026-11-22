@@ -250,6 +250,9 @@ export class Notifier {
         if (holders.get(d.id) !== d.memberId || !(everyone || d.id === me)) continue;
         await this.putPart(d.id, c.id, computeReminders(data, d.memberId, prefsOf(this.engine, d.memberId)));
       }
+      // Appareils qui n'ont plus accès à ce cercle (membre exclu, appareil déclaré perdu) : leurs rappels de ce
+      // cercle sont effacés du relais, sinon ils continueraient d'afficher les évènements des 14 jours suivants.
+      if (everyone) for (const id of this.engine.vault.formerHolders(c.id)) await this.putPart(id, c.id, []).catch(() => {});
     }
   }
 

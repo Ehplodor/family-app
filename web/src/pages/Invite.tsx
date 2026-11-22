@@ -47,7 +47,7 @@ export function InvitePanel({ onDone }: { onDone: () => void }) {
       if (Date.now() > inv.expiresAt) return setState('expired');
       try {
         const r = await pollJoinRequest(inv);
-        if (r) setReq({ ...r, code: await requestSafetyCode(inv.secret, r.pub) });
+        if (r) setReq({ ...r, code: await requestSafetyCode(inv.secret, r) });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
