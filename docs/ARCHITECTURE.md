@@ -129,8 +129,11 @@ Clé à usage unique de l'évènement → chiffre l'évènement entier (titre, d
   par défaut de ses nouveaux évènements (réglage local, « Toute la famille » par défaut).
 - **Nouvel appareil : autorisation d'un geste.** À son arrivée dans la famille, un appareil choisit lui-même « qui il
   est ». Il ne reçoit donc **jamais automatiquement** la clé d'un cercle : un appareil qui y a déjà accès affiche
-  « X attend l'accès » et doit appuyer sur *Autoriser*. Les rappels et notifications d'un évènement privé ne partent
-  qu'aux appareils autorisés.
+  « X attend l'accès » et doit appuyer sur *Autoriser*. Il affiche alors un **code de 5 émojis**, calculé avec le
+  secret de la clé et l'identifiant du nouvel appareil. Le nouvel appareil ne fait que **proposer** chaque accès reçu
+  (nom du cercle, appareil qui l'envoie, code) : rien n'est lu ni écrit avec cette clé avant qu'on appuie sur « Le
+  code correspond ». Une fausse clé envoyée en même temps par un autre appareil donne un autre code, et son
+  expéditeur est affiché. Les rappels et notifications d'un évènement privé ne partent qu'aux appareils autorisés.
 - **Clés difficiles à falsifier** (même par un appareil de la famille qui ferait tourner une version modifiée de
   l'appli) :
   - l'identifiant d'une clé est dérivé de son secret : réécrire une enveloppe avec un autre secret sous le même nom
@@ -141,7 +144,24 @@ Clé à usage unique de l'évènement → chiffre l'évènement entier (titre, d
   - un appareil n'est « autorisé » (rappels, notifications, liste « Appareils qui ont accès ») que si son enveloppe
     porte une preuve chiffrée avec la clé du cercle ;
   - le cercle « Moi seul » d'un membre est créé par son appareil **le plus ancien** : un appareil qui vient de
-    choisir ce profil ne peut pas en devenir le propriétaire.
+    choisir ce profil ne peut pas en devenir le propriétaire ;
+  - chaque enveloppe est **signée par l'appareil qui la remet**, pour son destinataire (`auth` : clé partagée ECDH
+    entre les deux clés d'appareil, puis AES-GCM sur un contenu vide ; voir `deviceAuth` dans `crypto.ts`). Une
+    enveloppe non signée, ou signée par un autre appareil que celui annoncé, est ignorée ;
+  - les **clés publiques des appareils sont épinglées** à la première vue (`kv/groupDevicePubs`). Si celle d'un
+    appareil change ensuite dans la liste partagée (quelqu'un tente de recevoir les clés à sa place), l'appareil est
+    signalé comme suspect et plus aucune clé ne lui est remise ;
+  - **deux clés concurrentes** liées à la même clé (un ancien membre qui fabrique sa propre clé avec l'ancienne au
+    moment de son retrait, ou deux renouvellements simultanés) : on garde celle dont les appareils qui la
+    connaissent sont **inclus** dans ceux de l'autre. Comptent les appareils autorisés (preuve) **et** l'appareil qui
+    nous l'a remise (signature) : la clé fabriquée par la personne retirée la contient forcément, elle ne peut pas
+    gagner. Si on ne peut pas départager, l'écriture est bloquée et l'appli propose de renouveler la clé, remise
+    seulement aux appareils autorisés pour toutes les clés concurrentes ;
+  - **résistance au sabotage** : les clés vérifiées restent sur l'appareil (`kv/groupSecrets`), ainsi que la
+    dernière version valide de chaque élément privé et de chaque description (`kv/groupGoodItems`,
+    `kv/groupGoodMeta`). Une version abîmée, supprimée « à la main » (suppression non chiffrée) ou réécrite avec une
+    ancienne clé ne remplace pas la bonne. Supprimer un élément privé ou un cercle écrit une « pierre tombale »
+    **chiffrée** : il faut la clé en vigueur pour supprimer.
 - **Retirer un membre** d'un cercle crée une nouvelle clé (époque suivante), remise seulement aux appareils déjà
   autorisés des membres restants ; la description du cercle est rechiffrée avec elle. Chaque modification d'un
   évènement tire une nouvelle clé à usage unique : la personne retirée garde ce qu'elle avait déjà vu, mais ne lit
@@ -159,12 +179,11 @@ Clé à usage unique de l'évènement → chiffre l'évènement entier (titre, d
   change pas.
 - **Sauvegarde** : la sauvegarde chiffrée (phrase secrète) contient aussi les clés des cercles de l'appareil, pour
   que ses évènements privés restent lisibles après une restauration.
-- **Limites** : un **ancien** membre d'un cercle qui ferait tourner une version modifiée de l'appli pourrait, avec
-  l'ancienne clé, fabriquer une clé concurrente au moment de son retrait : l'appli le détecte (« deux clés
-  concurrentes ») et propose de renouveler la clé. Un appareil qui n'a encore aucune clé d'un cercle (nouvel
-  appareil en attente) ne peut pas distinguer la vraie clé d'une fausse envoyée en même temps par une version
-  modifiée : seule une signature par appareil (piste d'évolution) le permettrait. Un tel appareil peut aussi
-  effacer ou abîmer des données (disponibilité, pas confidentialité). Rendre privé un évènement familial ne
+- **Limites** : le code de 5 émojis ne protège que si on le compare vraiment. Les clés publiques sont épinglées à la
+  première vue : si elles ont été falsifiées **avant** l'arrivée d'un appareil, seul le code le révèle. Un appareil
+  qui rejoint la famille plus tard ne reçoit que la version actuelle des éléments (pas la dernière valide gardée par
+  les autres) : un sabotage peut le priver d'un élément, sans jamais lui en faire lire un faux. Les données
+  **familiales** (hors cercles) restent modifiables par tout appareil de la famille, comme avant. Rendre privé un évènement familial ne
   l'efface pas tout de suite de l'historique du relais : jusqu'au prochain instantané, un appareil qui rejoint la
   famille peut encore recevoir l'ancienne version. La fusion se fait par évènement entier (et non champ par champ) pour un évènement privé ; un membre
   qui ferait tourner une version modifiée de l'appli pourrait perturber un cercle dont il fait ou a fait partie
@@ -241,6 +260,7 @@ multiplier les cercles « anciens » à partir d'un seul.
 | Visiteur malveillant qui crée des cercles en masse ou remplit l'espace | Limites de création (par connexion et au total, par jour), quota progressif par cercle, effacement des cercles abandonnés |
 | Autre site (fork) qui se branche sur votre relais | `ALLOWED_ORIGINS` (navigateurs), et dans tous les cas les mêmes garde-fous |
 | Membre malveillant dans le cercle | Hors périmètre : tous les appareils du cercle sont de confiance. Un membre pourrait écrire au nom d'un autre. |
+| Appareil de la famille (version modifiée) qui vise un cercle restreint | Il ne lit rien sans y avoir été autorisé (code à comparer), ne peut pas faire adopter une fausse clé, ni effacer ou abîmer un élément privé sur les appareils qui l'ont déjà ; un membre retiré ne lit pas la suite. |
 
 ## Synchronisation : comment les modifications se fusionnent
 

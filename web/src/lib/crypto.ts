@@ -111,6 +111,26 @@ export async function openFromDevice(privateKey: CryptoKey, envelope: string, co
   return open(key, b, context);
 }
 
+/**
+ * Signature d'un appareil POUR un autre appareil : clé partagée ECDH entre la clé privée de l'un et la clé
+ * publique de l'autre (seuls ces deux appareils peuvent la calculer), puis AES-GCM sur un contenu vide avec
+ * le contexte en données associées. Le destinataire sait ainsi quel appareil a écrit le message.
+ */
+export async function deviceAuth(privateKey: CryptoKey, peerPublicJwk: JsonWebKey, context: string): Promise<string> {
+  const key = await ecdhKey(privateKey, peerPublicJwk, `device-auth:${context}`);
+  return seal(key, new Uint8Array(0), context);
+}
+
+export async function checkDeviceAuth(privateKey: CryptoKey, peerPublicJwk: JsonWebKey, tag: unknown, context: string): Promise<boolean> {
+  if (typeof tag !== 'string') return false;
+  try {
+    const key = await ecdhKey(privateKey, peerPublicJwk, `device-auth:${context}`);
+    return (await open(key, tag, context)).length === 0;
+  } catch {
+    return false;
+  }
+}
+
 /* ---------------------------------------------------------------- Invitations */
 
 export type InviteKeys = { inviteId: string; key: CryptoKey };

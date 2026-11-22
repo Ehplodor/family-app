@@ -21,7 +21,7 @@
  * (chaque modification d'un élément tire une nouvelle clé à usage unique).
  */
 import { fromUtf8, hex, utf8 } from './bytes';
-import { deriveGroupKey, deriveGroupKeyId, importItemKey, newItemKey, open, openFromDevice, openJSON, seal, sealJSON, sealToDevice } from './crypto';
+import { deriveGroupKey, deriveGroupKeyId, importItemKey, safetyCode, newItemKey, open, openFromDevice, openJSON, seal, sealJSON, sealToDevice } from './crypto';
 
 type Bytes = Uint8Array<ArrayBuffer>;
 
@@ -33,6 +33,8 @@ export type GroupMeta = {
   members: string[];
   /** Cercle personnel (« Moi seul ») de ce membre. */
   personal?: string;
+  /** Cercle supprimé (la suppression est elle aussi chiffrée : un appareil sans accès ne peut pas la simuler). */
+  deleted?: boolean;
 };
 /** Document `groups/<id>` : la description chiffrée, et l'identifiant de la clé utilisée. */
 export type GroupDoc = { meta?: string | null; mk?: string | null };
@@ -40,8 +42,8 @@ export type GroupDoc = { meta?: string | null; mk?: string | null };
  * Document `groupKeys/<keyId><deviceId>` : le secret d'un cercle, chiffré pour UN appareil.
  *  - `proof` : preuve, chiffrée avec la clé du cercle, que cet appareil a été autorisé par un appareil qui
  *    détenait la clé (un appareil sans la clé ne peut pas se déclarer « autorisé » pour recevoir les rappels) ;
- *  - `link` / `pk` : pour une clé renouvelée (époque > 0), preuve chiffrée avec la clé précédente `pk` : seul un
- *    appareil qui détenait la clé en vigueur peut en annoncer une nouvelle.
+ *  - `links` : pour une clé renouvelée (époque > 0), preuve(s) chiffrée(s) avec la ou les clés précédentes : seul
+ *    un appareil qui détenait la clé en vigueur peut en annoncer une nouvelle.
  */
 export type GroupKeyDoc = {
   group: string;
@@ -51,8 +53,9 @@ export type GroupKeyDoc = {
   env: string;
   by: string;
   proof?: string;
-  link?: string;
-  pk?: string;
+  links?: { pk: string; link: string }[];
+  /** Signature de l'appareil `by` pour l'appareil `device` : le destinataire sait qui lui remet la clé. */
+  auth?: string;
 };
 /** Document `privateEvents/<id>` : un évènement chiffré pour un ou plusieurs cercles. */
 export type PrivateBox = { v: 1; w: Record<string, string>; d: string };
@@ -109,6 +112,10 @@ export async function sealGroupSecret(pub: JsonWebKey, secret: Bytes, group: str
   return sealToDevice(pub, secret, envContext(group, keyId, epoch, device));
 }
 
+/** Contexte de la signature d'une enveloppe : qui (`by`) remet quelle clé à quel appareil. */
+export const authContext = (group: string, keyId: string, epoch: number, device: string, by: string) =>
+  `group-auth:${group}:${keyId}:${epoch}:${device}:${by}`;
+
 /** Nouvelle clé de cercle : secret aléatoire, identifiant dérivé du secret. */
 export async function newGroupKey(group: string, epoch: number, secret: Bytes): Promise<HeldKey> {
   return { group, keyId: await deriveGroupKeyId(secret), epoch, key: await deriveGroupKey(secret), secret };
@@ -140,42 +147,127 @@ export async function checkLink(prev: HeldKey, next: Pick<HeldKey, 'keyId' | 'ep
   }
 }
 
+/** Liens d'une clé renouvelée vers les clés précédentes (une seule en général ; plusieurs après un conflit). */
+export type KeyLinkRef = { pk: string; link: string };
+function linksOf(d: GroupKeyDoc): KeyLinkRef[] {
+  const out: KeyLinkRef[] = [];
+  if (Array.isArray(d.links)) for (const l of d.links) if (l && typeof l.pk === 'string' && typeof l.link === 'string') out.push(l);
+  return out;
+}
+
+/** Appareils dont l'autorisation pour une clé est prouvée (preuve chiffrée avec cette clé). */
+export async function provenHolders(k: HeldKey, docs: GroupKeyDoc[], cache?: Map<string, boolean>): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const d of docs) {
+    if (d.key !== k.keyId || typeof d.device !== 'string') continue;
+    const ck = `${k.keyId}|${d.device}|${d.proof}`;
+    let ok = cache?.get(ck);
+    if (ok === undefined) {
+      ok = await checkProof(k, d.device, d.proof);
+      cache?.set(ck, ok);
+    }
+    if (ok) out.add(d.device);
+  }
+  return out;
+}
+
+const subset = (a: Set<string>, b: Set<string>) => [...a].every((x) => b.has(x));
+
+export type Resolved = {
+  /** Clé avec laquelle chiffrer (null : pas encore acceptée, ou conflit non résolu). */
+  current: HeldKey | null;
+  /** Dernière clé sûre et unique (à épingler). */
+  pinned: HeldKey | null;
+  /** Appareils autorisés pour `current`. */
+  holders: Set<string>;
+  /** Conflit : clés concurrentes qu'on ne sait pas départager (écriture bloquée jusqu'au renouvellement). */
+  conflict: { key: HeldKey; holders: Set<string> }[] | null;
+  /** Sans épingle (premier accès) : clés proposées, à accepter après comparaison d'un code. */
+  offers: HeldKey[];
+};
+
 /**
- * Clé en vigueur d'un cercle pour CET appareil. On part de la clé « épinglée » (la dernière qu'il a jugée sûre)
- * et on ne monte d'une époque que par une clé liée à une clé déjà sûre. Une clé fabriquée par un appareil qui
- * n'avait pas la clé en vigueur (même s'il en a envoyé une enveloppe à tout le monde, avec une époque plus
- * haute ou un identifiant « plus petit ») n'est donc jamais adoptée. Sans épingle (premier accès), on prend la
- * clé détenue la plus récente. `conflict` : deux clés sûres à la même époque (renouvellements simultanés, ou
- * ancien membre qui a fabriqué une clé concurrente avec l'ancienne clé) : à signaler.
+ * Clé en vigueur d'un cercle pour CET appareil.
+ *
+ * - On part de la clé « épinglée » (la dernière jugée sûre, gardée sur l'appareil) et on ne monte d'une époque
+ *   que par une clé **liée** à une clé sûre (preuve chiffrée avec elle). Une clé fabriquée par un appareil sans
+ *   la clé en vigueur n'est jamais adoptée ; une clé concurrente à la même époque que l'épingle est ignorée.
+ * - Deux clés liées à la même époque (un ancien membre a fabriqué une clé concurrente avec l'ancienne clé au
+ *   moment de son retrait, ou deux renouvellements simultanés) : on garde celle dont les appareils autorisés
+ *   sont **inclus** dans ceux de toutes les autres. Les appareils « qui connaissent » une clé comptent aussi
+ *   (`knowers` : l'appareil qui nous l'a remise, signature vérifiée) : une clé fabriquée par la personne retirée
+ *   contient donc forcément son appareil, et ne peut pas gagner. Sinon : conflit, écriture bloquée jusqu'au
+ *   renouvellement.
+ * - Sans épingle (nouvel appareil) : rien n'est adopté automatiquement ; les clés reçues sont « proposées », à
+ *   accepter après avoir comparé un code avec l'appareil qui a donné l'accès (voir grantCode).
  */
 export async function resolveCurrent(
   held: HeldKey[],
   docs: GroupKeyDoc[],
   pin?: string,
-): Promise<{ current: HeldKey | null; conflict: boolean }> {
-  if (!held.length) return { current: null, conflict: false };
-  const byNewest = [...held].sort((a, b) => b.epoch - a.epoch || (a.keyId < b.keyId ? -1 : 1));
-  const start = held.find((k) => k.keyId === pin) ?? byNewest[0];
-  let trusted = [start];
+  proofCache?: Map<string, boolean>,
+  knowers?: Map<string, Set<string>>,
+): Promise<Resolved> {
+  const start = pin ? held.find((k) => k.keyId === pin) : undefined;
+  if (!start) {
+    const offers = [...held].sort((a, b) => b.epoch - a.epoch || (a.keyId < b.keyId ? -1 : 1));
+    return { current: null, pinned: null, holders: new Set(), conflict: null, offers };
+  }
+  let level: HeldKey[] = [start];
+  let pinned = start;
   for (;;) {
+    const epoch = level[0].epoch + 1;
     const next: HeldKey[] = [];
     for (const k of held) {
-      if (k.epoch !== trusted[0].epoch + 1) continue;
-      const links = docs.filter((d) => d.key === k.keyId && typeof d.link === 'string');
-      for (const d of links) {
-        const prev = trusted.find((t) => t.keyId === d.pk);
-        if (prev && (await checkLink(prev, k, d.link))) {
-          next.push(k);
-          break;
+      if (k.epoch !== epoch) continue;
+      let ok = false;
+      for (const d of docs) {
+        if (d.key !== k.keyId) continue;
+        for (const l of linksOf(d)) {
+          const prev = level.find((t) => t.keyId === l.pk);
+          if (prev && (await checkLink(prev, k, l.link))) {
+            ok = true;
+            break;
+          }
         }
+        if (ok) break;
       }
+      if (ok) next.push(k);
     }
     if (!next.length) break;
-    trusted = next;
+    if (next.length === 1) {
+      level = next;
+      pinned = next[0];
+      continue;
+    }
+    // Appareils qui connaissent chaque clé : autorisés prouvés + appareils qui nous l'ont remise (signature
+    // vérifiée). L'auteur d'une clé concurrente ne peut donc pas se cacher pour la faire gagner.
+    const withHolders = await Promise.all(
+      next.map(async (key) => {
+        const holders = await provenHolders(key, docs, proofCache);
+        for (const d of knowers?.get(key.keyId) ?? []) holders.add(d);
+        return { key, holders };
+      }),
+    );
+    const minimal = withHolders.filter((a) => withHolders.every((b) => subset(a.holders, b.holders)));
+    if (minimal.length >= 1) {
+      // Plusieurs clés aux autorisés identiques (même renouvellement envoyé deux fois) : la plus petite, au hasard.
+      minimal.sort((a, b) => (a.key.keyId < b.key.keyId ? -1 : 1));
+      level = [minimal[0].key];
+      pinned = minimal[0].key;
+      continue;
+    }
+    return { current: null, pinned, holders: new Set(), conflict: withHolders, offers: [] };
   }
-  trusted.sort((a, b) => (a.keyId < b.keyId ? -1 : 1));
-  return { current: trusted[0], conflict: trusted.length > 1 };
+  return { current: level[0], pinned: level[0], holders: await provenHolders(level[0], docs, proofCache), conflict: null, offers: [] };
 }
+
+/**
+ * Code de vérification d'un accès (5 émojis) : calculé avec le secret de la clé et l'appareil qui la reçoit.
+ * L'appareil qui donne l'accès l'affiche ; le nouvel appareil aussi, pour chaque clé reçue. Une fausse clé
+ * (envoyée par un autre appareil) donne un autre code.
+ */
+export const grantCode = (k: HeldKey, deviceId: string) => safetyCode('group-grant', k.secret, deviceId);
 
 /** Ouvre une enveloppe adressée à cet appareil ; null si elle est illisible ou incohérente. */
 export async function openGroupSecret(privateKey: CryptoKey, doc: GroupKeyDoc, deviceId: string): Promise<HeldKey | null> {
@@ -200,7 +292,13 @@ export async function openGroupMeta(doc: GroupDoc | undefined, held: Map<string,
   try {
     const m = await openJSON<GroupMeta>(k.key, doc.meta, `group-meta:${group}`);
     if (typeof m?.name !== 'string' || !Array.isArray(m.members)) return null;
-    return { name: m.name, color: typeof m.color === 'string' ? m.color : '#8E5CE6', members: m.members.filter((x) => typeof x === 'string'), personal: m.personal };
+    return {
+      name: m.name,
+      color: typeof m.color === 'string' ? m.color : '#8E5CE6',
+      members: m.members.filter((x) => typeof x === 'string'),
+      personal: m.personal,
+      ...(m.deleted ? { deleted: true } : {}),
+    };
   } catch {
     return null;
   }

@@ -6,7 +6,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Lock, ShieldCheck, Users } from 'lucide-react';
 import { useEngine, useGroups, useMe, useMembers, useNotifier } from '../store';
 import { Avatar, ColorPicker, Field, FieldGroup, MemberChips, PALETTE, confirmDelete } from '../ui';
-import type { GroupInfo } from '../lib/groupManager';
+import type { GroupInfo, GroupOffer } from '../lib/groupManager';
 
 /* ------------------------------------------------------------------ Visibilité par défaut (par appareil) */
 
@@ -103,7 +103,7 @@ export function CirclesSheet() {
   const visibility = useDefaultVisibility();
   const [editing, setEditing] = useState<string | 'new' | null>(null);
   const [error, setError] = useState('');
-  const [personal, setPersonal] = useState<'none' | 'ok' | 'waiting'>('ok');
+  const [personal, setPersonal] = useState<'none' | 'ok' | 'offer' | 'waiting'>('ok');
   const list = groups.list();
   useEffect(() => {
     groups.personalStatus().then(setPersonal);
@@ -131,6 +131,14 @@ export function CirclesSheet() {
         </p>
       )}
       {error && <p className="error">{error}</p>}
+      <Offers offers={groups.offers()} onError={setError} />
+      {groups.suspects().map((d) => (
+        <p key={d.id} className="error small">
+          ⚠️ La clé de sécurité de l'appareil « {d.label || 'Appareil'} » a changé depuis que cet appareil le connaît. C'est
+          anormal : plus aucun accès ne lui est remis. S'il ne s'agit pas d'un appareil que vous connaissez, retirez-le dans{' '}
+          <b>Sécurité</b>.
+        </p>
+      ))}
       <ul className="cal-list">
         {list.map((g) => (
           <li key={g.id}>
@@ -184,9 +192,62 @@ export function CirclesSheet() {
             Retirer quelqu'un d'un cercle change sa clé : la personne garde ce qu'elle avait déjà vu, mais ne lit plus ce qui
             est ajouté ou modifié ensuite.
           </li>
+          <li>
+            Quand un appareil est autorisé, les deux appareils affichent un code de 5 émojis : comparez-les avant
+            d'accepter. Un code différent signale une fausse clé envoyée par un autre appareil.
+          </li>
           <li>Les rappels d'un évènement privé ne sont envoyés qu'aux membres de ses cercles.</li>
         </ul>
       </details>
+    </div>
+  );
+}
+
+/** Accès proposés à cet appareil : rien n'est adopté avant comparaison du code avec l'appareil qui autorise. */
+function Offers({ offers, onError }: { offers: GroupOffer[]; onError: (e: string) => void }) {
+  const groups = useGroups();
+  const [busy, setBusy] = useState(false);
+  if (!offers.length) return null;
+  const several = new Set(offers.map((o) => o.group)).size < offers.length;
+  return (
+    <div className="card form">
+      <p className="small">
+        <ShieldCheck size={14} /> <b>Accès proposés à cet appareil.</b> Sur l'appareil qui vous autorise, le même code doit
+        s'afficher. S'il est différent, n'acceptez pas.
+      </p>
+      {several && (
+        <p className="error small">
+          Plusieurs accès sont proposés pour le même cercle : l'un d'eux vient peut-être d'un appareil malveillant. N'acceptez
+          que celui dont le code correspond.
+        </p>
+      )}
+      {offers.map((o) => (
+        <div key={o.keyId} className="banner-info small row-line">
+          <span className="grow">
+            <Lock size={14} /> <b>{o.personal ? 'Moi seul' : o.name}</b>, proposé par {o.by}
+            <br />
+            Code : <span style={{ fontSize: '1.3em', letterSpacing: '0.15em' }}>{o.code}</span>
+          </span>
+          <button
+            type="button"
+            className="btn small primary"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              onError('');
+              try {
+                await groups.acceptOffer(o.group, o.keyId);
+              } catch (e) {
+                onError((e as Error).message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Le code correspond
+          </button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -216,6 +277,21 @@ function GroupRow({ group: g, open, onToggle, onError }: { group: GroupInfo; ope
   const holders = groups.holders(g.id);
   const members = g.members.map((id) => byId(id)).filter((m) => !!m);
   const [busy, setBusy] = useState(false);
+  const [granted, setGranted] = useState<{ label: string; code: string } | null>(null);
+  const [codes, setCodes] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    (async () => {
+      const out: Record<string, string> = {};
+      for (const d of holders) out[d.id] = (await groups.codeFor(g.id, d.id)) ?? '';
+      if (alive) setCodes(out);
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, g.id, holders.map((d) => d.id).join()]);
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     onError('');
@@ -254,8 +330,9 @@ function GroupRow({ group: g, open, onToggle, onError }: { group: GroupInfo; ope
       {g.conflict && (
         <div className="banner-info small row-line">
           <span className="grow">
-            ⚠️ Deux clés concurrentes existent pour ce cercle (changements simultanés, ou appareil suspect). Renouvelez la clé :
-            seuls les appareils listés dans « Détails » la recevront.
+            ⚠️ Deux clés concurrentes existent pour ce cercle (changements simultanés, ou appareil suspect). Par prudence, rien
+            ne peut y être ajouté tant que la clé n'est pas renouvelée : seuls les appareils autorisés pour les deux clés la
+            recevront.
           </span>
           <button type="button" className="btn small" disabled={busy} onClick={() => act(() => groups.update(g.id, {}))}>
             Renouveler
@@ -268,18 +345,42 @@ function GroupRow({ group: g, open, onToggle, onError }: { group: GroupInfo; ope
             <ShieldCheck size={14} /> <b>{d.label || 'Appareil'}</b> ({byId(d.memberId)?.name ?? '?'}, arrivé le{' '}
             {new Date(d.createdAt).toLocaleDateString('fr-FR')}) attend l'accès. Autorisez-le seulement si c'est bien son appareil.
           </span>
-          <button type="button" className="btn small primary" disabled={busy} onClick={() => act(() => groups.grant(g.id, d.id))}>
+          <button type="button" className="btn small primary" disabled={busy} onClick={() =>
+              act(async () => {
+                const code = await groups.grant(g.id, d.id);
+                setGranted({ label: d.label || 'Appareil', code });
+              })
+            }
+          >
             Autoriser
           </button>
         </div>
       ))}
+      {granted && (
+        <div className="banner-info small row-line">
+          <span className="grow">
+            ✅ Accès envoyé à <b>{granted.label}</b>. Sur cet appareil, ouvrez <b>Calendrier → Cercles</b> : il doit afficher le
+            code <span style={{ fontSize: '1.3em', letterSpacing: '0.15em' }}>{granted.code}</span>
+          </span>
+          <button type="button" className="btn small" onClick={() => setGranted(null)}>
+            OK
+          </button>
+        </div>
+      )}
       {open && (
         <div className="card form">
-          <p className="small">
-            <b>Appareils qui ont accès :</b>{' '}
-            {holders.map((d) => `${d.label || 'Appareil'} (${byId(d.memberId)?.name ?? '?'})${d.id === engine.deviceId ? ' – celui-ci' : ''}`).join(', ') ||
-              'aucun'}
-          </p>
+          <div className="small">
+            <b>Appareils qui ont accès</b> (avec leur code de vérification) :
+            <ul>
+              {holders.map((d) => (
+                <li key={d.id}>
+                  {d.label || 'Appareil'} ({byId(d.memberId)?.name ?? '?'}){d.id === engine.deviceId ? ' – celui-ci' : ''}{' '}
+                  <span>{codes[d.id]}</span>
+                </li>
+              ))}
+              {!holders.length && <li>aucun</li>}
+            </ul>
+          </div>
           {!g.personal && g.access === 'ok' && (
             <GroupForm
               initial={g}
