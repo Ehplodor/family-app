@@ -229,8 +229,9 @@ export class Engine {
     if (RELAY_URL && this.sync?.status !== 'online') return;
     this.selfBusy = true;
     try {
+      // Pas de recalcul forcé ici : ce contrôle est lui-même lancé après chaque recalcul du coffre, il
+      // relancerait le suivant, sans fin (appli figée sur les téléphones). Chaque écriture recalcule déjà.
       await this.vault.publishDevice();
-      await this.vault.refresh();
       // « Moi seul » : seulement une fois les accès reçus (un autre appareil du membre l'a peut-être déjà créé).
       if (this.memberCircles().length) await this.ensurePersonal();
       const mine = this.memberCircles();

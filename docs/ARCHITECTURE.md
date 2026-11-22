@@ -42,7 +42,9 @@ Deux limites techniques en découlent :
 - **Boîte aux lettres :** le relais conserve les modifications chiffrées pour les appareils hors ligne. Ils
   rattrapent leur retard quand ils reviennent.
 - **Temps réel :** quand plusieurs appareils sont ouverts, chaque modification est rediffusée instantanément
-  (WebSocket).
+  (WebSocket). Un « ping » toutes les 25 s, et à chaque retour au premier plan, vérifie que la connexion
+  répond encore : Android coupe souvent celle d'une appli en arrière-plan sans la fermer ; sans réponse en
+  5 s, l'appli en ouvre une nouvelle et rattrape ce qu'elle a manqué.
 - **Rappels :** le relais garde une file de notifications **déjà chiffrées** et les envoie à l'heure prévue.
 - **Confiance minimale :** le relais n'a aucune clé. S'il était piraté, ou si Cloudflare lisait le disque, on n'y
   trouverait que des paquets illisibles (voir « Ce que le relais voit »).
