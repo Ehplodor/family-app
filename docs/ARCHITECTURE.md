@@ -148,13 +148,20 @@ lire un cercle où il n'a pas été admis.
   **autre** appareil peut annuler la déclaration (« Retrouvé ») : les nouvelles clés lui sont alors remises. *Sécurité
   → Changer la clé d'accès au relais* déménage en plus tout le monde vers un nouvel espace, pour qu'il ne reçoive même
   plus les paquets chiffrés.
+- Un appareil déjà perdu ne peut plus **rien déclarer** (ni la perte d'un autre appareil, ni un déménagement de
+  l'espace) : un téléphone volé ne peut donc pas riposter en coupant les autres. Si la déclaration de perte est écrasée
+  dans les données partagées, les appareils qui l'ont vue la **republient** (telle quelle, signée par son auteur),
+  pour que les appareils hors ligne ou arrivés ensuite l'apprennent aussi.
+- Les rappels d'un cercle planifiés sur le relais pour un appareil qui n'y a plus accès (exclu, perdu) sont effacés
+  par les appareils restants.
 
 > Limite inhérente à tout système : un appareil retiré **garde les données qu'il avait déjà**. Le renouvellement
 > protège l'avenir, pas le passé.
 
 ### Déménagement de l'espace et migration
 
-Un déménagement (`v2.move`, signé) dépose dans l'ancien espace le nouveau secret chiffré pour chaque appareil gardé ;
+Un déménagement (`v2.move`, signé par un appareil autorisé aujourd'hui dans un des cercles : ni perdu, ni d'un membre
+exclu) dépose dans l'ancien espace le nouveau secret chiffré pour chaque appareil gardé ;
 l'ancien espace passe en lecture seule, puis est effacé par le relais au bout de 30 jours (avec une « pierre
 tombale » qui l'empêche d'être recréé).
 

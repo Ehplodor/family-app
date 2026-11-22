@@ -153,8 +153,8 @@ type Local = {
   hidden: string[];
   /** Autorisations vues (gardées même si le document est écrasé ensuite). */
   grants: Record<string, Signed<KeyDocP>[]>;
-  /** Pertes déclarées valables : appareil → { horloge, auteur }. */
-  lost: Record<string, { at: string; by: string }>;
+  /** Pertes déclarées valables : appareil → { horloge, auteur, déclaration signée (pour la republier) }. */
+  lost: Record<string, { at: string; by: string; s?: Signed<LostP> }>;
   /** Clés d'administration successives de chaque cercle. */
   spubs: Record<string, JsonWebKey[]>;
   /** Membres passés et présents de chaque cercle. */
@@ -510,6 +510,14 @@ export class Vault {
 
     // 4. Pertes valables : déclarées par un appareil du même membre, ou par l'admin d'un cercle de ce membre.
     //    Une déclaration vue est gardée ; seul un AUTRE appareil (non perdu) peut rendre l'accès, plus tard.
+    //    Une déclaration faite par un appareil APRÈS sa propre perte ne compte pas : sinon un téléphone volé
+    //    pourrait déclarer perdus tous les autres appareils de son membre (ou de ses cercles, s'il est admin).
+    //    Traitées dans l'ordre de l'horloge, pour que la plus ancienne des deux déclarations croisées l'emporte.
+    lostDocs.sort((a, b) => (a.s.at < b.s.at ? -1 : a.s.at > b.s.at ? 1 : 0));
+    const lostBy = (device: string, at: string) => {
+      const l = local.lost[device];
+      return !!l && l.at <= at;
+    };
     for (const { id, s } of lostDocs) {
       if (s.p?.device !== id) continue;
       const author = this.memberOfDevice.get(s.by);
@@ -517,9 +525,20 @@ export class Vault {
       if (!author || !target) continue;
       const allowed = author === target || [...rosters.values()].some((r) => r.admin === author && r.members.includes(target));
       if (!allowed) continue;
+      if (s.by !== id && lostBy(s.by, s.at)) continue;
       const cur = local.lost[id];
-      if (s.p.lost && !cur) local.lost[id] = { at: s.at, by: s.by };
+      if (s.p.lost && !cur) local.lost[id] = { at: s.at, by: s.by, s };
       else if (!s.p.lost && cur && s.by !== id && s.at > cur.at && !local.lost[s.by]) delete local.lost[id];
+    }
+    // Déclarations gardées d'un tour précédent, mais faites par un appareil déjà perdu à ce moment-là.
+    for (let changed = true; changed; ) {
+      changed = false;
+      for (const [id, v] of Object.entries(local.lost)) {
+        if (v.by !== id && lostBy(v.by, v.at)) {
+          delete local.lost[id];
+          changed = true;
+        }
+      }
     }
     if (JSON.stringify(local.lost) !== lostBefore) {
       dirty.add('lost');
@@ -527,6 +546,21 @@ export class Vault {
       this.again = true;
     }
     this.lost = new Map(Object.entries(local.lost).map(([d, v]) => [d, v.at]));
+    // Déclaration écrasée dans la réplique (par l'appareil perdu lui-même, ou par un document illisible) :
+    // les appareils qui ne l'ont pas encore vue (hors ligne, nouveaux) ne sauraient jamais qu'il est perdu.
+    // On republie la déclaration signée d'origine (valable telle quelle, quel que soit l'appareil qui la renvoie).
+    const republish: Signed<LostP>[] = [];
+    const rawLost = new Map(this.raw('lost').map((d) => [d.id, d.s]));
+    for (const [id, v] of Object.entries(local.lost)) {
+      if (!v.s) continue;
+      const cur = rawLost.get(id);
+      if (isSigned(cur) && cur.sig === v.s.sig) continue;
+      let bad: boolean;
+      if (!isSigned(cur)) bad = true;
+      else if ((cur.p as LostP | undefined)?.lost === true) bad = false;
+      else bad = cur.by === id || lostBy(cur.by, cur.at) || !(await this.signedBy('lost', id, cur));
+      if (bad) republish.push(v.s);
+    }
 
     this.state = state;
     this.rosters = rosters;
@@ -538,6 +572,7 @@ export class Vault {
     for (const k of dirty) await this.save(k);
     this.ready = true;
     this.emit();
+    for (const s of republish) await this.replica.upsert(col('lost'), s.p.device, { s });
   }
 
   /**
@@ -715,6 +750,23 @@ export class Vault {
     const out = new Map<string, string>();
     for (const [d, m] of (k && this.keyHolders.get(k.keyId)) ?? []) if (!this.lost.has(d)) out.set(d, m);
     return out;
+  }
+
+  /** Appareil autorisé AUJOURD'HUI dans au moins un de mes cercles (membre actuel, appareil non perdu). */
+  isActive(device: string): boolean {
+    for (const c of this.circleInfo.keys()) if (this.holders(c).has(device)) return true;
+    return false;
+  }
+
+  /**
+   * Appareils qui ont eu accès à un cercle mais ne l'ont plus (membre exclu, appareil perdu) : leurs rappels
+   * planifiés pour ce cercle doivent être effacés du relais.
+   */
+  formerHolders(circle: string): string[] {
+    const cur = this.holders(circle);
+    const out = new Set<string>();
+    for (const k of this.chainOf(circle)) for (const d of this.keyHolders.get(k.keyId)?.keys() ?? []) if (!cur.has(d)) out.add(d);
+    return [...out];
   }
 
   /** Appareils de membres de mes cercles (pour l'écran Cercles). */

@@ -426,4 +426,53 @@ describe('coffre : appareil perdu', () => {
     await sync();
     expect(rod.vault.isLost(julie2.id)).toBe(false);
   });
+
+  it("un appareil perdu ne peut pas déclarer perdus les autres appareils (ni ceux de ses cercles)", async () => {
+    const { rod, julie, fam } = await family();
+    const julie2 = await phone('julie');
+    await julie.vault.approveOwnDevice(julie2.id);
+    await sync();
+    await julie.vault.declareLost(julie2.id);
+    await sync();
+    // Le voleur riposte : il déclare perdu le téléphone de Julie.
+    await julie2.vault['put']('lost', julie.id, { device: julie.id, lost: true });
+    await sync();
+    for (const p of [rod, julie]) {
+      expect(p.vault.isLost(julie2.id)).toBe(true);
+      expect(p.vault.isLost(julie.id)).toBe(false);
+    }
+    expect(rod.vault.holders(fam).has(julie.id)).toBe(true);
+  });
+
+  it("le voleur efface la déclaration de perte : elle est republiée pour les appareils qui arrivent ensuite", async () => {
+    const { rod, julie, fam } = await family();
+    const julie2 = await phone('julie');
+    await julie.vault.approveOwnDevice(julie2.id);
+    await sync();
+    await julie.vault.declareLost(julie2.id);
+    await sync();
+    await julie2.vault.declareLost(julie2.id, false);
+    await sync();
+    const tom = await phone('tom');
+    await rod.vault.admit(fam, 'tom', tom.id);
+    await sync();
+    expect(tom.vault.isLost(julie2.id)).toBe(true);
+    expect(tom.vault.isActive(julie2.id)).toBe(false);
+  });
+
+  it("appareils actifs et anciens autorisés (pour les déménagements et les rappels)", async () => {
+    const { rod, julie, leo, fam } = await family();
+    const julie2 = await phone('julie');
+    await julie.vault.approveOwnDevice(julie2.id);
+    await sync();
+    expect(rod.vault.isActive(julie2.id)).toBe(true);
+    expect(rod.vault.formerHolders(fam)).toEqual([]);
+    await julie.vault.declareLost(julie2.id);
+    await rod.vault.exclude(fam, 'leo');
+    await sync();
+    expect(rod.vault.isActive(julie2.id)).toBe(false);
+    expect(rod.vault.isActive(leo.id)).toBe(false);
+    expect(rod.vault.isActive(julie.id)).toBe(true);
+    expect(rod.vault.formerHolders(fam).sort()).toEqual([julie2.id, leo.id].sort());
+  });
 });
